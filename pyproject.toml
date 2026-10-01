@@ -1,0 +1,55 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "DJ",  # flake8-django
+    "S",   # flake8-bandit (security)
+    "C4",  # flake8-comprehensions
+    "T20", # flake8-print (no bare print() in production code)
+]
+ignore = [
+    "E501",   # line too long — handled by formatter, not enforced as error
+    "DJ001",  # avoid null on string-based fields — we do this intentionally in some places
+    "S101",   # assert used — fine in tests
+    "S105",   # hardcoded password — false positives in test fixtures and example env files
+    "S106",   # hardcoded password in function arg — same
+    "S311",   # pseudo-random generators — fine for non-crypto use
+    "B008",   # do not perform function calls in default arguments — DRF serializers do this
+]
+
+[tool.ruff.lint.per-file-ignores]
+"*/migrations/*" = ["E501", "F401", "I001"]  # auto-generated, don't lint
+"*/tests/*" = ["S101", "S105", "S106", "T20"]  # asserts and print() ok in tests
+"conftest.py" = ["S101"]
+"manage.py" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "accounts",
+    "ai_agent",
+    "appointments",
+    "audit",
+    "clinical",
+    "clinics",
+    "common",
+    "config",
+    "doctors",
+    "followups",
+    "patients",
+    "queue_mgmt",
+    "reports",
+    "subscriptions",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false

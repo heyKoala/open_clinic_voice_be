@@ -1,0 +1,37 @@
+# Python/Django
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+*.sqlite3
+
+# Environment files (keep the committed templates)
+.env
+.env.*
+!.env.example
+!.env.ci
+
+# Tests & caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Celery beat state / local broker files
+.celery/
+celerybeat-schedule*
+dump.rdb
+
+# Runtime artefacts: uploaded/generated media and Celery filesystem-broker files
+/media/
+/control/
+
+# OS/Editor
+.DS_Store
+.vscode/
+.idea/
+.claude/

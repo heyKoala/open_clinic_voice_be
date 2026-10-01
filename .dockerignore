@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.Python
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Environment
+.env
+.env.local
+*.env
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# Media (can be large)
+media/old_backups/
+
+# Misc
+.DS_Store
+README.md
+GETTING_STARTED.md
+Makefile
+
+# Documentation
+docs/
