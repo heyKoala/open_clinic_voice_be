@@ -40,6 +40,7 @@ redis==8.0.1
 reportlab==5.0.0
 requests==2.34.2
 ruff==0.16.1
+setuptools<81  # razorpay imports pkg_resources, removed in setuptools 81+
 six==1.17.0
 sqlparse==0.5.5
 typing_extensions==4.16.0
