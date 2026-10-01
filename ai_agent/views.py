@@ -7,7 +7,11 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters as rest_filters
 from rest_framework.pagination import PageNumberPagination
 
-from ai_agent.models import AgentConfiguration, CallLog
+from ai_agent import providers
+from ai_agent.agent_settings import (
+    InvalidSettings, effective_settings, provider_config, render, save_settings, settings_payload,
+)
+from ai_agent.models import AgentConfiguration, CallLog, VoiceAgentSettings
 from ai_agent.serializers import AgentConfigurationSerializer, CallLogSerializer
 from common.api import ClinicScopedModelViewSet
 from accounts.permissions import IsClinicAdmin, IsAdminOrDoctor
@@ -16,10 +20,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import action
 from clinics.models import Clinic
+from clinics.views import _owned_root
 from ai_agent.tool_views import HasRock8WebhookSecret, rock8_path, with_rock8_token
 from ai_agent.call_events import is_call_event, match_patient, record_call_event
 from ai_agent.call_sessions import caller_number, start_call_log
@@ -46,26 +51,12 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
     base_url = _base_url(request)
     current_date = timezone.now().strftime('%B %d, %Y (%A)')
 
+    agent = effective_settings(root)
+    # The admin's instructions, then the facts only the system knows: date, caller and centres.
     system_prompt = (
-        f"You are a helpful medical receptionist for {root.name} handling incoming calls from patients. "
-        f"CRITICAL CONTEXT: Today's date is {current_date}. Always base your date calculations (like 'tomorrow' or 'next week') on this exact date. "
-        "Your main tasks are: "
-        "1. Schedule, reschedule, or cancel appointments. "
-        "2. If an appointment slot is unavailable or the doctor is away, suggest the next available slot. "
-        "3. If the patient wants to book an appointment, DO NOT list all doctors at once. First, ask them what specialty or domain they need (e.g., General Physician, Cardiology, ENT). "
-        "4. Once they specify a specialty, use the provided tools to fetch doctors in that domain, and only list those specific doctors to the patient. "
-        "5. To cancel an appointment, FIRST use the lookup_appointments tool to search for it using their name or phone number. "
-        "6. If the lookup tool returns multiple appointments (e.g., people with the same first name), read out the doctor names, dates, and times, and ask the patient to confirm which one is theirs before you cancel it. "
-        "Use the provided tools to fetch available slots and manage appointments. "
-        "CRITICAL BEHAVIOR: "
-        "1. KEEP YOUR RESPONSES EXTREMELY SHORT AND CONCISE. "
-        "2. Never use more than 1 or 2 short sentences. "
-        "3. Do not list out all available options unless asked. "
-        "4. Respond naturally and quickly, as if you are on a real, fast-paced phone call. "
-        "BOOKING RULES: "
-        "1. Before booking, you MUST ask for the patient's full name. Never book with a placeholder such as 'Unknown', 'Caller' or 'Patient'. "
-        "2. You also need the patient's phone number (see CALLER below). "
-        "3. Before calling book_appointment, repeat the doctor, centre, date, time and patient name back to the caller and get a yes."
+        f"{render(agent['system_prompt'], root)}"
+        f"\n\nCRITICAL CONTEXT: Today's date is {current_date}. Always base your date calculations "
+        "(like 'tomorrow' or 'next week') on this exact date."
     )
     if caller:
         known = match_patient(root, caller)
@@ -158,42 +149,10 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
         }
     ]
 
-    # Map the frontend's 'sarvam_x' to the actual Sarvam speaker ID
-    # The frontend uses 'sarvam_shubh', 'sarvam_ritu', etc.
-    # Sarvam's bulbul:v3 expects 'shubh', 'ritu', 'simran', 'kavya', 'ratan'.
-    sarvam_speaker = "simran"  # default fallback
-    try:
-        if hasattr(root, 'configuration') and root.configuration.ai_voice_type and root.configuration.ai_voice_type.startswith("sarvam_"):
-            sarvam_speaker = root.configuration.ai_voice_type.replace("sarvam_", "")
-    except Exception:
-        pass
-
-    return {
+    config = {
         "system_prompt": system_prompt,
-        "first_message": f"Welcome to {root.name}. How can I help you today?",
-        "model_type": "standard",
-        "stt_config": {
-            "provider": "sarvam",
-            "config": {
-                "model": "saaras:v3",
-                "language": "unknown"
-            }
-        },
-        "llm_config": {
-            "provider": "gemini",
-            "config": {
-                "model": "gemini-3.1-flash-lite",
-                "temperature": 0.3
-            }
-        },
-        "tts_config": {
-            "provider": "sarvam",
-            "config": {
-                "model": "bulbul:v3",
-                "speaker": sarvam_speaker,
-                "target_language_code": "en-IN"
-            }
-        },
+        "first_message": render(agent["first_message"], root),
+        "model_type": agent["model_type"],
         "tools": tools,
         "thinking_sound": True,
         "max_silence_seconds": 120,
@@ -204,6 +163,12 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
             "min_speech_duration": 0.05
         }
     }
+    if agent["model_type"] == VoiceAgentSettings.ModelType.REALTIME:
+        config["realtime_config"] = provider_config(agent["realtime"])
+    else:
+        for stage in ("stt", "llm", "tts"):
+            config[f"{stage}_config"] = provider_config(agent[stage])
+    return config
 
 
 def _handle_webhook(clinic, request):
@@ -378,3 +343,102 @@ class Rock8StartWebCallView(APIView):
             if hasattr(e, 'response') and e.response is not None:
                 err_msg = e.response.text
             return Response({"error": f"Failed to start web call: {err_msg}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+# ---------------------------------------------------------------------------------------------
+# Voice agent settings: greeting, instructions and models. One set per main clinic, shared by
+# its centres (like the phone number).
+# ---------------------------------------------------------------------------------------------
+
+NOT_OWNER = {"detail": "Only the main clinic's admins can change the AI receptionist."}
+
+
+def _catalog_error(exc) -> Response:
+    code = status.HTTP_404_NOT_FOUND if isinstance(exc, providers.UnknownProvider) else status.HTTP_502_BAD_GATEWAY
+    return Response({"detail": str(exc)}, status=code)
+
+
+class VoiceAgentSettingsView(APIView):
+    permission_classes = [IsClinicAdmin]
+
+    def get(self, request):
+        root = _owned_root(request)
+        if root is None:
+            return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
+        return Response(settings_payload(root))
+
+    def put(self, request):
+        root = _owned_root(request)
+        if root is None:
+            return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
+        try:
+            save_settings(root, request.data if isinstance(request.data, dict) else {})
+        except InvalidSettings as exc:
+            return Response(exc.errors, status=status.HTTP_400_BAD_REQUEST)
+        except providers.ProviderError as exc:
+            return _catalog_error(exc)
+        return Response(settings_payload(root))
+
+    def delete(self, request):
+        """Back to the built-in defaults."""
+        root = _owned_root(request)
+        if root is None:
+            return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
+        VoiceAgentSettings.objects.filter(clinic=root).delete()
+        return Response(settings_payload(root))
+
+
+class VoiceAgentProvidersView(APIView):
+    """The provider catalog: ``?type=stt|llm|tts|realtime`` lists providers; add ``&provider=``
+    for one provider's models (with their languages, and voices for realtime models)."""
+    permission_classes = [IsClinicAdmin]
+
+    def get(self, request):
+        kind = request.query_params.get("type", "")
+        if kind not in providers.KINDS:
+            return Response({"type": [f"Choose one of: {', '.join(providers.KINDS)}."]}, status=status.HTTP_400_BAD_REQUEST)
+        provider = request.query_params.get("provider", "").strip()
+        try:
+            if provider:
+                return Response(providers.provider_entry(kind, provider))
+            return Response({"type": kind, "providers": providers.list_providers(kind)})
+        except providers.ProviderError as exc:
+            return _catalog_error(exc)
+
+
+class VoiceAgentVoicesView(APIView):
+    """A text-to-speech provider's voices: ``?provider=sarvam&model=bulbul:v3`` (+ q, language, gender)."""
+    permission_classes = [IsClinicAdmin]
+
+    def get(self, request):
+        params = request.query_params
+        provider = params.get("provider", "").strip()
+        if not provider:
+            return Response({"provider": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        filters = {key: params.get(key, "").strip() for key in ("model", "q", "language", "gender")}
+        try:
+            return Response(providers.voices(provider, **filters))
+        except providers.ProviderError as exc:
+            return _catalog_error(exc)
+
+
+class VoiceAgentPreviewView(APIView):
+    """A short spoken sample of a voice (MP3), for the providers that support it."""
+    permission_classes = [IsClinicAdmin]
+
+    def post(self, request):
+        data = request.data if isinstance(request.data, dict) else {}
+        provider, model, voice = (str(data.get(key) or "").strip() for key in ("provider", "model", "voice"))
+        if provider not in providers.PREVIEW_PROVIDERS:
+            return Response({"detail": "Voice samples are not available for this provider."}, status=status.HTTP_400_BAD_REQUEST)
+        if not model or not voice:
+            return Response({"detail": "Choose a model and a voice first."}, status=status.HTTP_400_BAD_REQUEST)
+        root = _owned_root(request)
+        if root is None:
+            return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
+        text = str(data.get("text") or "").strip() or effective_settings(root)["first_message"]
+        try:
+            audio = providers.synthesize(provider, model, voice, render(text, root)[:300], str(data.get("language") or "").strip())
+        except providers.ProviderError as exc:
+            return _catalog_error(exc)
+        return HttpResponse(audio, content_type="audio/mpeg")

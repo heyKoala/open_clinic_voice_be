@@ -1,6 +1,6 @@
 from django.db import models
 
-from common.models import ClinicScopedModel
+from common.models import ClinicScopedModel, TrackedModel
 
 
 class AgentConfiguration(ClinicScopedModel):
@@ -32,3 +32,29 @@ class CallLog(ClinicScopedModel):
         constraints=[models.UniqueConstraint(
             fields=["clinic", "external_call_id"], condition=~models.Q(external_call_id=""), name="uniq_calllog_external_call",
         )]
+
+
+class VoiceAgentSettings(TrackedModel):
+    """How the AI receptionist sounds and thinks. Owned by a main clinic and shared by its centres
+    (they share one phone number). No row means the built-in defaults."""
+
+    class ModelType(models.TextChoices):
+        # Speech-to-text -> LLM -> text-to-speech, each chosen separately.
+        STANDARD = "standard", "Standard"
+        # One speech-to-speech model.
+        REALTIME = "realtime", "Realtime"
+
+    clinic = models.OneToOneField("clinics.Clinic", on_delete=models.CASCADE, related_name="voice_agent")
+    # Blank: use the built-in greeting / instructions.
+    first_message = models.TextField(blank=True)
+    system_prompt = models.TextField(blank=True)
+    model_type = models.CharField(max_length=16, choices=ModelType.choices, default=ModelType.STANDARD)
+    # Each stage: {"provider", "model", "language", "voice", ..., "config": {...}}, where "config" is
+    # the same choice under the provider's own key names (what the voice provider is sent).
+    stt = models.JSONField(default=dict, blank=True)
+    llm = models.JSONField(default=dict, blank=True)
+    tts = models.JSONField(default=dict, blank=True)
+    realtime = models.JSONField(default=dict, blank=True)
+
+    def __str__(self) -> str:
+        return f"Voice agent settings ({self.clinic.name})"
