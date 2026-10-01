@@ -12,6 +12,14 @@ Two payload shapes reach the webhook:
 
   The transcript is not in the payload: it is behind a signed ``media.transcript_url``.
 
+  The provider's ``GET /recordings`` transcript is plain text, one timestamped line per turn with
+  the agent's tool calls in between::
+
+      [11:32:14] USER: I want to book an appointment
+      [11:32:25] TOOL CALL: list_doctors
+      [11:32:26] TOOL RESULT: list_doctors (ok, 601.4ms) {...}
+      [11:32:35] AGENT: We have Dr. ...
+
 * The older web-call format: ``{"status": "completed" | "event": "call_ended", "durationSeconds",
   "recordingURL", "callSummary", "transcript": [{"role", "text"}, ...]}``.
 
@@ -23,6 +31,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 
 import requests
 from django.core.files.base import ContentFile
@@ -42,6 +51,8 @@ PROVIDER_EVENTS = {
 LEGACY_END_EVENTS = {"call_ended", "call.ended"}
 MAX_RECORDING_BYTES = 50 * 1024 * 1024
 AI_ROLES = {"agent", "assistant", "ai", "bot", "system_agent"}
+TIMED_LINE = re.compile(r"^\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]\s*(AGENT|USER|TOOL CALL|TOOL RESULT):?\s*(.*)$")
+BOOKED_APPOINTMENT = re.compile(r'"appointment_id"\s*:\s*"?(\d+)')
 
 
 def is_call_event(data) -> bool:
@@ -85,6 +96,40 @@ def match_patient(clinic, *phones):
     return None
 
 
+def _timed_turns(text: str) -> list[tuple[int, str, str]]:
+    """``(seconds since midnight, kind, text)`` per turn of the provider's plain-text transcript
+    ([] if ``text`` isn't in that format). Lines without a timestamp continue the previous turn."""
+    turns = []
+    for line in text.splitlines():
+        match = TIMED_LINE.match(line.strip())
+        if match:
+            hours, minutes, seconds, kind, body = match.groups()
+            turns.append((int(hours) * 3600 + int(minutes) * 60 + int(seconds or 0), kind, body.strip()))
+        elif turns and line.strip():
+            at, kind, body = turns[-1]
+            turns[-1] = (at, kind, f"{body} {line.strip()}".strip())
+    return turns
+
+
+def transcript_duration(text) -> int:
+    """Seconds between the first and last turn of the provider's plain-text transcript (0 if unknown)."""
+    turns = _timed_turns(text) if isinstance(text, str) else []
+    if len(turns) < 2:
+        return 0
+    return (turns[-1][0] - turns[0][0]) % (24 * 3600)
+
+
+def booked_appointment_ids(text) -> list[int]:
+    """Appointments the agent booked during the call, read from its successful book_appointment results."""
+    ids = []
+    for _, kind, body in (_timed_turns(text) if isinstance(text, str) else []):
+        if kind == "TOOL RESULT" and body.startswith("book_appointment") and '"success":true' in body.replace(" ", ""):
+            match = BOOKED_APPOINTMENT.search(body)
+            if match:
+                ids.append(int(match.group(1)))
+    return ids
+
+
 def format_transcript(raw) -> str:
     """Normalise a transcript into ``AI: ...`` / ``Patient: ...`` lines (what the Call Logs page renders)."""
     if raw is None:
@@ -98,6 +143,11 @@ def format_transcript(raw) -> str:
                 return format_transcript(json.loads(text))
             except ValueError:
                 pass
+        turns = _timed_turns(text)
+        if turns:
+            # Tool calls and their raw results are the agent's internals, not part of the conversation.
+            return "\n".join(f"{'AI' if kind == 'AGENT' else 'Patient'}: {body}"
+                             for _, kind, body in turns if kind in ("AGENT", "USER") and body)
         return text
     if isinstance(raw, dict):
         for key in ("transcript", "messages", "turns", "conversation", "segments", "items", "data"):
@@ -247,6 +297,17 @@ def enqueue_media_fetch(call_log_id: int, transcript_url: str | None, recording_
     transaction.on_commit(_enqueue)
 
 
+def _booked_patient_id(log: CallLog, raw_transcript) -> int | None:
+    """The patient of the appointment booked during the call (within the clinic's group), if any."""
+    from appointments.models import Appointment
+
+    ids = booked_appointment_ids(raw_transcript)
+    if not ids:
+        return None
+    return (Appointment.objects.filter(id__in=ids, clinic__in=log.clinic.group_clinics())
+            .order_by("id").values_list("patient_id", flat=True).first())
+
+
 def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str | None) -> None:
     """Download the transcript (stored as text) and the recording (stored as a file). Raises on HTTP errors."""
     log = CallLog.objects.filter(id=call_log_id).first()
@@ -259,9 +320,20 @@ def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str
             payload = response.json()
         except ValueError:
             payload = response.text
+        updates = {}
         transcript = format_transcript(payload)
         if transcript:
-            CallLog.objects.filter(id=log.id).update(transcript=transcript, updated_at=timezone.now())
+            updates["transcript"] = transcript
+        # Calls logged from the config request carry no duration, and web calls no caller number:
+        # both are read from the transcript instead.
+        if not log.duration_seconds and transcript_duration(payload):
+            updates["duration_seconds"] = transcript_duration(payload)
+        if not log.patient_id:
+            patient_id = _booked_patient_id(log, payload)
+            if patient_id:
+                updates["patient_id"] = patient_id
+        if updates:
+            CallLog.objects.filter(id=log.id).update(**updates, updated_at=timezone.now())
     if recording_url and not log.recording_file:
         with requests.get(recording_url, timeout=60, stream=True) as response:
             response.raise_for_status()

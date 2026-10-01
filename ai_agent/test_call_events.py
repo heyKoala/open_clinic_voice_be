@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 from rest_framework import status
 
-from ai_agent.call_events import format_transcript
+from ai_agent.call_events import format_transcript, transcript_duration
 from ai_agent.models import CallLog
 from ai_agent.tool_views import rock8_clinic_token
 from patients.models import Patient
@@ -147,6 +147,9 @@ def test_event_without_token_is_rejected(api_client, clinic):
     ({"messages": [{"role": "bot", "message": "Hi"}]}, "AI: Hi"),
     ('[{"role": "agent", "text": "Hi"}]', "AI: Hi"),
     ("AI: Hi\nPatient: Hello", "AI: Hi\nPatient: Hello"),
+    ("[11:32:09] AGENT: Hi\n[11:32:14] USER: Book me in\n[11:32:25] TOOL CALL: get_available_slots {\"date\":\n"
+     " \"2026-10-02\"}\n[11:32:26] TOOL RESULT: get_available_slots (ok, 1.0ms) {}\n[11:32:35] AGENT: Done",
+     "AI: Hi\nPatient: Book me in\nAI: Done"),
     (None, ""),
 ])
 def test_format_transcript_variants(raw, expected):
@@ -213,3 +216,44 @@ def test_booking_with_placeholder_patient_details_is_refused(api_client, clinic)
     assert bad_name.data["error"] == "PATIENT_NAME_REQUIRED"
     assert bad_phone.data["error"] == "PATIENT_PHONE_REQUIRED"
     assert not Patient.objects.exists()
+
+
+def test_web_call_patient_and_duration_come_from_the_provider_transcript(
+    api_client, clinic, django_capture_on_commit_callbacks
+):
+    """Web calls have no caller number: the patient is the one the agent booked during the call."""
+    from appointments.models import Appointment
+    from doctors.models import Doctor
+    from django.utils import timezone
+    from ai_agent.tasks import fetch_call_recording
+
+    links = {"recording_url": "https://cdn.example/rec.mp3", "transcript_url": "https://cdn.example/transcript.txt"}
+    with mock.patch("ai_agent.call_sessions.recording_links", return_value=links):
+        _post(api_client, clinic, {"room_name": "webcall-1"}, django_capture_on_commit_callbacks)
+        patient = Patient.objects.create(clinic=clinic, full_name="Chinmaya", phone="7259414272")
+        doctor = Doctor.objects.create(clinic=clinic, full_name="Dr Rao")
+        start = timezone.now() + timezone.timedelta(days=1)
+        appointment = Appointment.objects.create(clinic=clinic, doctor=doctor, patient=patient, starts_at=start,
+                                                 ends_at=start + timezone.timedelta(minutes=15), source="phone")
+        text = (
+            "[23:59:50] AGENT: Welcome to Test Clinic.\n"
+            "[23:59:55] USER: Book me with Dr Rao.\n"
+            "[00:00:10] TOOL CALL: book_appointment {\"doctor_id\": \"1\"}\n"
+            f"[00:00:11] TOOL RESULT: book_appointment (ok, 7.0ms) {{\"success\":true,\"appointment_id\":{appointment.id}}}\n"
+            "[00:00:28] AGENT: You're booked. Goodbye."
+        )
+
+        def fake_get(url, **kwargs):
+            response = _fake_get(url, **kwargs)
+            if "transcript" in url:
+                response.json.side_effect = ValueError
+                response.text = text
+            return response
+
+        with mock.patch("ai_agent.call_events.requests.get", side_effect=fake_get):
+            fetch_call_recording.apply(args=(CallLog.objects.get().id, "webcall-1", ""))
+
+    log = CallLog.objects.get()
+    assert (log.patient_id, log.outcome, log.duration_seconds) == (patient.id, "appointment_booked", 38)
+    assert log.transcript == "AI: Welcome to Test Clinic.\nPatient: Book me with Dr Rao.\nAI: You're booked. Goodbye."
+    assert transcript_duration("AI: Hi") == 0
