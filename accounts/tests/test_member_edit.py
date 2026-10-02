@@ -106,3 +106,49 @@ def test_other_clinics_staff_are_out_of_reach(admin_client, clinic_b):
 def test_staff_cannot_edit_each_other(receptionist_client, doctor_user):
     assert receptionist_client.get(url(doctor_user)).status_code == 403
     assert receptionist_client.patch(url(doctor_user), {"full_name": "Hacked"}, format="json").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Front desk mapping: which receptionists manage a doctor
+# ---------------------------------------------------------------------------
+
+def make_receptionist(clinic, email, **extra):
+    return User.objects.create_user(
+        clinic=clinic, email=email, full_name=email.split("@")[0].title(), password="Desk-Pass-123!",
+        role=User.Role.RECEPTIONIST, membership_status=User.MembershipStatus.ACTIVE, is_verified=True, **extra,
+    )
+
+
+def test_admin_maps_a_doctor_to_receptionists(admin_client, clinic, doctor_user, doctor, receptionist_user):
+    second = make_receptionist(clinic, "desk2@testclinic.example.com")
+
+    response = admin_client.patch(url(doctor_user), {"doctor": {"receptionists": [second.id]}}, format="json")
+
+    assert response.status_code == 200, response.content
+    assert response.data["doctor"]["receptionists"] == [second.id]
+    assert list(doctor.receptionists.all()) == [second]
+    assert admin_client.get(url(doctor_user)).data["doctor"]["receptionists"] == [second.id]
+
+    # Leaving the mapping out of a later edit keeps it; an empty list clears it.
+    admin_client.patch(url(doctor_user), {"doctor": {"specialty": "Cardiology"}}, format="json")
+    assert list(doctor.receptionists.all()) == [second]
+    admin_client.patch(url(doctor_user), {"doctor": {"receptionists": []}}, format="json")
+    assert not doctor.receptionists.exists()
+
+
+def test_a_doctor_can_only_be_mapped_to_this_centres_active_receptionists(
+    admin_client, clinic, clinic_b, clinic_admin, doctor_user, doctor, receptionist_user,
+):
+    outsider = make_receptionist(clinic_b, "desk@other.example.com")
+    inactive = make_receptionist(clinic, "left@testclinic.example.com", is_active=False)
+
+    for ids in ([outsider.id], [inactive.id], [clinic_admin.id], [receptionist_user.id, 999999], "nope", [True]):
+        response = admin_client.patch(
+            url(doctor_user), {"full_name": "Changed", "doctor": {"receptionists": ids}}, format="json",
+        )
+        assert response.status_code == 400, ids
+        assert "receptionists" in response.data["doctor"]
+
+    doctor_user.refresh_from_db()
+    assert doctor_user.full_name == "Test Doctor"
+    assert not doctor.receptionists.exists()

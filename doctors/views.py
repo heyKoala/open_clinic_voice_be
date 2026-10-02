@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from accounts.permissions import IsClinicAdmin
 from common.api import ClinicScopedModelViewSet
-from doctors.models import Doctor
+from doctors.models import Doctor, doctors_for_receptionist
 from doctors.serializers import DoctorSerializer
 
 
@@ -39,6 +39,14 @@ class DoctorViewSet(ClinicScopedModelViewSet):
     ordering_fields = ["full_name", "specialty", "created_at", "consultation_minutes"]
     pagination_class = StandardResultsSetPagination
     filter_backends = [DjangoFilterBackend, rest_filters.SearchFilter, rest_filters.OrderingFilter]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # ?desk=mine: a receptionist's own doctors (the reception dashboard). Everyone else gets all.
+        if (self.action == "list" and self.request.query_params.get("desk") == "mine"
+                and self.request.user.role == "receptionist"):
+            queryset = doctors_for_receptionist(queryset, self.request.user, self.request.clinic)
+        return queryset
 
     def get_permissions(self):
         # Doctor profiles are provisioned through invites; only admins may add or remove them.

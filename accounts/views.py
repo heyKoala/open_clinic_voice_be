@@ -57,7 +57,7 @@ from accounts.models import Invitation
 from accounts.exceptions import SeatLimitReachedError
 from clinics.models import Clinic
 from common.audit import log_data_change
-from doctors.models import Doctor
+from doctors.models import Doctor, active_receptionists
 from doctors.serializers import DoctorSerializer
 from subscriptions.models import ClinicEntitlement
 
@@ -352,12 +352,19 @@ def _member_payload(member, doctor):
 	data["doctor"] = None
 	if doctor is not None:
 		profile = DoctorSerializer(doctor).data
-		data["doctor"] = {"id": doctor.id, **{field: profile[field] for field in DOCTOR_EDITABLE_FIELDS}}
+		data["doctor"] = {
+			"id": doctor.id,
+			**{field: profile[field] for field in DOCTOR_EDITABLE_FIELDS},
+			"receptionists": sorted(profile["receptionists"]),
+		}
 	return data
 
 
 class UserDetailView(APIView):
-	"""An admin reads or edits a team member: GET, or PATCH {full_name, age, gender, doctor: {...}}."""
+	"""An admin reads or edits a team member: GET, or PATCH {full_name, age, gender, doctor: {...}}.
+
+	``doctor.receptionists`` is the list of receptionist user ids whose front desk manages the doctor.
+	"""
 	permission_classes = [IsClinicAdmin]
 
 	def _member(self, request, user_id):
@@ -380,6 +387,7 @@ class UserDetailView(APIView):
 		user_serializer.is_valid(raise_exception=True)
 
 		doctor_serializer = None
+		receptionists = None
 		doctor_data = request.data.get("doctor")
 		if doctor_data is not None:
 			if doctor is None:
@@ -391,6 +399,16 @@ class UserDetailView(APIView):
 			)
 			if not doctor_serializer.is_valid():
 				return Response({"doctor": doctor_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+			if "receptionists" in doctor_data:
+				ids = doctor_data["receptionists"]
+				if not isinstance(ids, list) or not all(isinstance(pk, int) and not isinstance(pk, bool) for pk in ids):
+					return Response({"doctor": {"receptionists": ["Expected a list of user ids."]}}, status=status.HTTP_400_BAD_REQUEST)
+				receptionists = list(active_receptionists(request.clinic).filter(pk__in=ids))
+				if len(receptionists) != len(set(ids)):
+					return Response(
+						{"doctor": {"receptionists": ["Pick active receptionists of this centre."]}},
+						status=status.HTTP_400_BAD_REQUEST,
+					)
 
 		with transaction.atomic():
 			member = user_serializer.save()
@@ -398,6 +416,8 @@ class UserDetailView(APIView):
 			# Patients and the AI receptionist see the doctor profile's name, so keep it in step.
 			if doctor_serializer is not None:
 				doctor = doctor_serializer.save(full_name=member.full_name)
+				if receptionists is not None:
+					doctor.receptionists.set(receptionists)
 				log_data_change(doctor, "update", request=request)
 			elif doctor is not None and doctor.full_name != member.full_name:
 				doctor.full_name = member.full_name
