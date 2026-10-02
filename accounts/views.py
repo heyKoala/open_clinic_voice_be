@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.db import transaction
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from rest_framework import status
@@ -55,6 +56,9 @@ from audit.models import AuthEvent, DeviceSession
 from accounts.models import Invitation
 from accounts.exceptions import SeatLimitReachedError
 from clinics.models import Clinic
+from common.audit import log_data_change
+from doctors.models import Doctor
+from doctors.serializers import DoctorSerializer
 from subscriptions.models import ClinicEntitlement
 
 
@@ -334,6 +338,72 @@ class DashboardStatsView(APIView):
 			"total_patients": total_patients,
 			"upcoming_appointments": upcoming_appointments
 		})
+
+
+# What an admin may change on a team member's doctor profile (never its user link or active flag).
+DOCTOR_EDITABLE_FIELDS = (
+	"degree", "specialty", "consultation_minutes", "max_patients_per_day",
+	"available_from", "available_to", "lunch_from", "lunch_to", "working_days",
+)
+
+
+def _member_payload(member, doctor):
+	data = UserMeSerializer(member).data
+	data["doctor"] = None
+	if doctor is not None:
+		profile = DoctorSerializer(doctor).data
+		data["doctor"] = {"id": doctor.id, **{field: profile[field] for field in DOCTOR_EDITABLE_FIELDS}}
+	return data
+
+
+class UserDetailView(APIView):
+	"""An admin reads or edits a team member: GET, or PATCH {full_name, age, gender, doctor: {...}}."""
+	permission_classes = [IsClinicAdmin]
+
+	def _member(self, request, user_id):
+		member = User.objects.filter(pk=user_id, clinic=request.clinic).first()
+		doctor = Doctor.objects.filter(user=member, clinic=request.clinic).first() if member else None
+		return member, doctor
+
+	def get(self, request, user_id: int):
+		member, doctor = self._member(request, user_id)
+		if member is None:
+			return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+		return Response(_member_payload(member, doctor))
+
+	def patch(self, request, user_id: int):
+		member, doctor = self._member(request, user_id)
+		if member is None:
+			return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+		user_serializer = UserUpdateSerializer(member, data=request.data, partial=True)
+		user_serializer.is_valid(raise_exception=True)
+
+		doctor_serializer = None
+		doctor_data = request.data.get("doctor")
+		if doctor_data is not None:
+			if doctor is None:
+				return Response({"doctor": ["This team member has no doctor profile."]}, status=status.HTTP_400_BAD_REQUEST)
+			if not isinstance(doctor_data, dict):
+				return Response({"doctor": ["Expected an object."]}, status=status.HTTP_400_BAD_REQUEST)
+			doctor_serializer = DoctorSerializer(
+				doctor, data={key: doctor_data[key] for key in DOCTOR_EDITABLE_FIELDS if key in doctor_data}, partial=True,
+			)
+			if not doctor_serializer.is_valid():
+				return Response({"doctor": doctor_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+		with transaction.atomic():
+			member = user_serializer.save()
+			log_data_change(member, "update", request=request)
+			# Patients and the AI receptionist see the doctor profile's name, so keep it in step.
+			if doctor_serializer is not None:
+				doctor = doctor_serializer.save(full_name=member.full_name)
+				log_data_change(doctor, "update", request=request)
+			elif doctor is not None and doctor.full_name != member.full_name:
+				doctor.full_name = member.full_name
+				doctor.save(update_fields=["full_name", "updated_at"])
+				log_data_change(doctor, "update", request=request)
+		return Response(_member_payload(member, doctor))
 
 
 class UserDeactivateView(APIView):

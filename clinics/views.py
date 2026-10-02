@@ -4,12 +4,13 @@ import logging
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import ProtectedError
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from clinics import plivo
-from clinics.models import Clinic, ClinicConfiguration, ClinicPhoneNumber
+from clinics.models import Clinic, ClinicConfiguration, ClinicPhoneNumber, PaymentTransaction
 from clinics.permissions import IsClinicAdmin
 from clinics.serializers import ClinicSerializer, ClinicConfigurationSerializer, ClinicHolidaySerializer
 from clinics.models import ClinicHoliday
@@ -41,12 +42,55 @@ class ClinicListCreateView(generics.ListCreateAPIView):
         log_data_change(clinic, "create", request=self.request)
         return clinic
 
-class ClinicDetailView(generics.RetrieveUpdateAPIView):
+def _centre_delete_blockers(clinic) -> list[str]:
+    """What a centre still holds that deleting it must never wipe (e.g. ["3 patients"])."""
+    from accounts.models import User
+    from ai_agent.models import CallLog
+    from patients.models import Patient
+
+    counts = [
+        # Patients carry the appointments, queue tokens, follow-ups and clinical records.
+        (Patient.objects.filter(clinic=clinic).count(), "patient", "patients"),
+        # Staff whose account belongs to this centre would be deleted along with it.
+        (User.objects.filter(clinic=clinic).count(), "staff account", "staff accounts"),
+        (CallLog.objects.filter(clinic=clinic).count(), "call log", "call logs"),
+        (PaymentTransaction.objects.filter(clinic=clinic, status=PaymentTransaction.Status.CAPTURED).count(),
+         "payment", "payments"),
+    ]
+    return [f"{count} {one if count == 1 else many}" for count, one, many in counts if count]
+
+
+class ClinicDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH the active clinic; DELETE removes it if it is a centre that holds no records."""
     serializer_class = ClinicSerializer
     permission_classes = [IsClinicAdmin]
 
     def get_queryset(self):
         return Clinic.objects.filter(id=self.request.clinic.id)
+
+    def destroy(self, request, *args, **kwargs):
+        clinic = self.get_object()
+        if clinic.parent_id is None:
+            return Response({"detail": "The main clinic can't be deleted. Only its centres can."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # Lock the centre so nothing is added to it between the check and the delete.
+            Clinic.objects.select_for_update().filter(id=clinic.id).first()
+            blockers = _centre_delete_blockers(clinic)
+            if blockers:
+                return Response(
+                    {"detail": f"{clinic.name} can't be deleted because it still has {', '.join(blockers)}."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            log_data_change(clinic, "delete", request=request, metadata={"name": clinic.name})
+            try:
+                clinic.delete()
+            except ProtectedError:
+                transaction.set_rollback(True)
+                return Response({"detail": f"{clinic.name} can't be deleted because other records still depend on it."},
+                                status=status.HTTP_409_CONFLICT)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ClinicConfigurationView(generics.RetrieveUpdateAPIView):
