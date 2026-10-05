@@ -309,6 +309,9 @@ WHATSAPP_API_TOKEN = os.getenv("WHATSAPP_API_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
+# Webhook that sends a patient their appointment confirmation on WhatsApp (the voice agent's
+# send_whatsapp_confirmation tool). The tool is not offered to the agent when this is unset.
+WHATSAPP_CONFIRMATION_WEBHOOK_URL = os.getenv("WHATSAPP_CONFIRMATION_WEBHOOK_URL", "")
 
 # Razorpay Configuration
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_placeholder")

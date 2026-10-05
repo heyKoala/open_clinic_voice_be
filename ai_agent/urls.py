@@ -10,7 +10,8 @@ from ai_agent.tool_views import (
     AIToolBookAppointmentView,
     AIToolCancelAppointmentView,
     AIToolListDoctorsView,
-    AIToolLookupAppointmentsView
+    AIToolLookupAppointmentsView,
+    AIToolSendWhatsAppConfirmationView,
 )
 
 router = DefaultRouter()
@@ -33,10 +34,12 @@ urlpatterns = [
     path("tools/rock8/<int:clinic_id>/<str:token>/cancel/", AIToolCancelAppointmentView.as_view(), name="rock8-tool-cancel-path-token"),
     path("tools/rock8/<int:clinic_id>/<str:token>/doctors/", AIToolListDoctorsView.as_view(), name="rock8-tool-doctors-path-token"),
     path("tools/rock8/<int:clinic_id>/<str:token>/appointments/", AIToolLookupAppointmentsView.as_view(), name="rock8-tool-lookup-appointments-path-token"),
+    path("tools/rock8/<int:clinic_id>/<str:token>/whatsapp-confirmation/", AIToolSendWhatsAppConfirmationView.as_view(), name="rock8-tool-whatsapp-confirmation-path-token"),
     path("tools/rock8/<int:clinic_id>/slots/", AIToolAvailableSlotsView.as_view(), name="rock8-tool-slots"),
     path("tools/rock8/<int:clinic_id>/book/", AIToolBookAppointmentView.as_view(), name="rock8-tool-book"),
     path("tools/rock8/<int:clinic_id>/cancel/", AIToolCancelAppointmentView.as_view(), name="rock8-tool-cancel"),
     path("tools/rock8/<int:clinic_id>/doctors/", AIToolListDoctorsView.as_view(), name="rock8-tool-doctors"),
     path("tools/rock8/<int:clinic_id>/appointments/", AIToolLookupAppointmentsView.as_view(), name="rock8-tool-lookup-appointments"),
+    path("tools/rock8/<int:clinic_id>/whatsapp-confirmation/", AIToolSendWhatsAppConfirmationView.as_view(), name="rock8-tool-whatsapp-confirmation"),
     path("", include(router.urls)),
 ]

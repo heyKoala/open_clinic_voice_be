@@ -1,5 +1,8 @@
 import hashlib
 import hmac
+import logging
+
+import requests
 
 from rest_framework.permissions import BasePermission
 from rest_framework.views import APIView
@@ -13,8 +16,10 @@ from django.shortcuts import get_object_or_404
 
 from doctors.models import Doctor, DoctorAbsence
 from appointments.models import Appointment
-from patients.models import Patient
+from patients.models import MessageLog, Patient
 from clinics.models import Clinic
+
+logger = logging.getLogger(__name__)
 
 
 def rock8_clinic_token(clinic_id) -> str:
@@ -421,6 +426,94 @@ class AIToolCancelAppointmentView(AIToolBaseView):
         return Response({
             "success": True,
             "message": "Appointment cancelled successfully."
+        })
+
+
+class AIToolSendWhatsAppConfirmationView(AIToolBaseView):
+    """Sends the patient a WhatsApp confirmation of an appointment the agent just booked."""
+
+    def post(self, request, *args, **kwargs):
+        group = self.get_group(kwargs)
+        appointment_id = request.data.get('appointment_id')
+
+        webhook_url = getattr(settings, "WHATSAPP_CONFIRMATION_WEBHOOK_URL", "")
+        if not webhook_url:
+            return Response({
+                "success": False,
+                "error": "NOT_CONFIGURED",
+                "message": "WhatsApp confirmations are not set up."
+            })
+
+        if not appointment_id:
+            return Response({
+                "success": False,
+                "error": "MISSING_PARAMS",
+                "message": "appointment_id is required."
+            })
+
+        appt = (
+            Appointment.objects.filter(id=_as_int(appointment_id), clinic__in=group)
+            .select_related("patient", "doctor").first()
+            if _as_int(appointment_id) else None
+        )
+        if not appt:
+            return Response({
+                "success": False,
+                "error": "NOT_FOUND",
+                "message": "Appointment not found."
+            })
+
+        if appt.status != Appointment.Status.SCHEDULED:
+            return Response({
+                "success": False,
+                "error": "INVALID_STATE",
+                "message": f"Appointment is {appt.status}."
+            })
+
+        # The model may call the tool twice; the patient should get one message.
+        if MessageLog.objects.filter(clinic=appt.clinic, metadata__confirmed_appointment_id=appt.id).exists():
+            return Response({
+                "success": True,
+                "message": "WhatsApp confirmation was already sent."
+            })
+
+        number = "".join(ch for ch in str(appt.patient.phone) if ch.isdigit())
+        starts_at = timezone.localtime(appt.starts_at)
+        payload = {
+            "number": number,
+            "patient_name": appt.patient.full_name,
+            "doctor_name": appt.doctor.full_name,
+            "appointment_date": starts_at.strftime('%d %B,%Y'),
+            "appointment_time": starts_at.strftime('%I:%M%p').lstrip("0").lower(),
+        }
+
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+        except requests.exceptions.RequestException:
+            logger.exception("WhatsApp confirmation failed for appointment %s", appt.id)
+            return Response({
+                "success": False,
+                "error": "SEND_FAILED",
+                "message": "Could not send the WhatsApp confirmation. The appointment is still booked."
+            })
+
+        MessageLog.objects.create(
+            clinic=appt.clinic,
+            patient=appt.patient,
+            method=MessageLog.Method.WHATSAPP,
+            status=MessageLog.Status.SENT,
+            is_sent=True,
+            message_text=(
+                f"Appointment confirmation: {payload['doctor_name']} on "
+                f"{payload['appointment_date']} at {payload['appointment_time']}"
+            ),
+            metadata={"confirmed_appointment_id": appt.id},
+        )
+
+        return Response({
+            "success": True,
+            "message": "WhatsApp confirmation sent."
         })
 
 

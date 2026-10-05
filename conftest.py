@@ -34,6 +34,12 @@ def eager_celery():
 
 
 @pytest.fixture(autouse=True)
+def no_whatsapp_confirmation_webhook(settings):
+    """A developer's .env may point at the real webhook; tests must never message patients."""
+    settings.WHATSAPP_CONFIRMATION_WEBHOOK_URL = ""
+
+
+@pytest.fixture(autouse=True)
 def clear_cache():
     """Throttle counters live in the cache; reset them so tests don't depend on run order."""
     from django.core.cache import cache

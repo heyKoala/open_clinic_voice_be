@@ -148,6 +148,22 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
             ]
         }
     ]
+    if getattr(settings, "WHATSAPP_CONFIRMATION_WEBHOOK_URL", ""):
+        tools.append({
+            "name": "send_whatsapp_confirmation",
+            "description": "Send the patient a WhatsApp confirmation of an appointment that was just booked.",
+            "method": "POST",
+            "url": tool_url("whatsapp-confirmation"),
+            "parameters": [
+                {"name": "appointment_id", "type": "string", "description": "The appointment_id returned by book_appointment", "location": "body", "required": True}
+            ]
+        })
+        system_prompt += (
+            "\n\nWHATSAPP CONFIRMATION: As soon as book_appointment succeeds, call send_whatsapp_confirmation "
+            "with the appointment_id it returned, then tell the caller the details were sent on WhatsApp. "
+            "If it fails, say the appointment is booked but the WhatsApp message could not be sent. "
+            "Never call it for an appointment that was not booked in this call."
+        )
 
     config = {
         "system_prompt": system_prompt,

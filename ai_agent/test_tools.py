@@ -1,5 +1,6 @@
 from __future__ import annotations
 import pytest
+from unittest.mock import patch
 from datetime import datetime, timedelta, date, time
 from django.utils import timezone
 from rest_framework import status
@@ -195,3 +196,88 @@ class TestRock8Tools:
         assert res.status_code == status.HTTP_200_OK
         assert res.data["success"] is False
         assert res.data["error"] == "NOT_FOUND"
+
+
+class TestWhatsAppConfirmationTool:
+    URL = "https://hooks.example.test/send_wa_msg"
+
+    @pytest.fixture
+    def appointment(self, clinic, doctor):
+        patient = Patient.objects.create(clinic=clinic, full_name="Athul", phone="+971 56 724 9393")
+        tz = timezone.get_current_timezone()
+        start = timezone.make_aware(datetime.combine(timezone.localtime().date() + timedelta(days=1), time(9, 0)), tz)
+        return Appointment.objects.create(
+            clinic=clinic, doctor=doctor, patient=patient, starts_at=start,
+            ends_at=start + timedelta(minutes=15), status="scheduled"
+        )
+
+    @pytest.fixture
+    def webhook(self, settings):
+        settings.WHATSAPP_CONFIRMATION_WEBHOOK_URL = self.URL
+        with patch("ai_agent.tool_views.requests.post") as post:
+            yield post
+
+    def send(self, api_client, clinic, appointment_id, rock8_headers):
+        return api_client.post(
+            f"/api/v1/ai/tools/rock8/{clinic.id}/whatsapp-confirmation/",
+            {"appointment_id": appointment_id},
+            format='json',
+            **rock8_headers
+        )
+
+    def test_sends_the_appointment_details(self, api_client, clinic, appointment, webhook, rock8_headers):
+        res = self.send(api_client, clinic, appointment.id, rock8_headers)
+
+        assert res.data["success"] is True
+        assert webhook.call_args.args[0] == self.URL
+        assert webhook.call_args.kwargs["json"] == {
+            "number": "971567249393",
+            "patient_name": "Athul",
+            "doctor_name": "Test Doctor",
+            "appointment_date": timezone.localtime(appointment.starts_at).strftime('%d %B,%Y'),
+            "appointment_time": "9:00am",
+        }
+
+    def test_sends_only_once_per_appointment(self, api_client, clinic, appointment, webhook, rock8_headers):
+        self.send(api_client, clinic, appointment.id, rock8_headers)
+        res = self.send(api_client, clinic, appointment.id, rock8_headers)
+
+        assert res.data["success"] is True
+        assert webhook.call_count == 1
+
+    def test_webhook_failure_is_reported_and_can_be_retried(self, api_client, clinic, appointment, webhook, rock8_headers):
+        import requests
+        webhook.side_effect = requests.exceptions.ConnectionError()
+        res = self.send(api_client, clinic, appointment.id, rock8_headers)
+        assert res.data["success"] is False
+        assert res.data["error"] == "SEND_FAILED"
+
+        webhook.side_effect = None
+        assert self.send(api_client, clinic, appointment.id, rock8_headers).data["success"] is True
+
+    def test_other_clinics_appointment_is_not_found(self, api_client, clinic_b, appointment, webhook, rock8_headers):
+        res = self.send(api_client, clinic_b, appointment.id, rock8_headers)
+
+        assert res.data["error"] == "NOT_FOUND"
+        webhook.assert_not_called()
+
+    def test_not_configured(self, api_client, clinic, appointment, settings, rock8_headers):
+        settings.WHATSAPP_CONFIRMATION_WEBHOOK_URL = ""
+        res = self.send(api_client, clinic, appointment.id, rock8_headers)
+
+        assert res.data["error"] == "NOT_CONFIGURED"
+
+    def test_agent_gets_the_tool_only_when_configured(self, clinic, settings, rf):
+        from ai_agent.views import build_agent_config
+        settings.ROCK8_WEBHOOK_SECRET = "test-secret"
+
+        settings.WHATSAPP_CONFIRMATION_WEBHOOK_URL = ""
+        config = build_agent_config(clinic, rf.get("/"))
+        assert "send_whatsapp_confirmation" not in [t["name"] for t in config["tools"]]
+        assert "send_whatsapp_confirmation" not in config["system_prompt"]
+
+        settings.WHATSAPP_CONFIRMATION_WEBHOOK_URL = self.URL
+        config = build_agent_config(clinic, rf.get("/"))
+        tool = next(t for t in config["tools"] if t["name"] == "send_whatsapp_confirmation")
+        assert tool["url"].endswith("/whatsapp-confirmation/")
+        assert "send_whatsapp_confirmation" in config["system_prompt"]
