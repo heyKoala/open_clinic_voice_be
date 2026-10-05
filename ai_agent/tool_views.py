@@ -230,6 +230,7 @@ class AIToolBookAppointmentView(AIToolBaseView):
         time_str = request.data.get('time')
         patient_phone = request.data.get('patient_phone')
         patient_name = request.data.get('patient_name')
+        reason = str(request.data.get('reason') or '').strip()[:255] or "AI booked appointment"
 
         if not all([doctor_id, date_str, time_str, patient_phone, patient_name]):
             return Response({
@@ -330,9 +331,9 @@ class AIToolBookAppointmentView(AIToolBaseView):
         # Serialise bookings per doctor so two callers cannot take the same slot.
         with transaction.atomic():
             Doctor.objects.select_for_update().filter(pk=doctor.pk).first()
-            return self._book_locked(clinic, doctor, patient_name, patient_phone, target_date, starts_at, ends_at)
+            return self._book_locked(clinic, doctor, patient_name, patient_phone, target_date, starts_at, ends_at, reason)
 
-    def _book_locked(self, clinic, doctor, patient_name, patient_phone, target_date, starts_at, ends_at):
+    def _book_locked(self, clinic, doctor, patient_name, patient_phone, target_date, starts_at, ends_at, reason):
         overlap = Appointment.objects.filter(
             doctor=doctor,
             status__in=['scheduled', 'checked_in', 'completed', 'in_consultation'],
@@ -370,7 +371,7 @@ class AIToolBookAppointmentView(AIToolBaseView):
             doctor=doctor,
             starts_at=starts_at,
             ends_at=ends_at,
-            reason="AI booked appointment",
+            reason=reason,
             status=Appointment.Status.SCHEDULED,
             source="phone"
         )

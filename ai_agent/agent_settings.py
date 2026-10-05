@@ -29,7 +29,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "BOOKING RULES: "
     "1. Before booking, you MUST ask for the patient's full name. Never book with a placeholder such as 'Unknown', 'Caller' or 'Patient'. "
     "2. You also need the patient's phone number (see CALLER below). "
-    "3. Before calling book_appointment, repeat the doctor, centre, date, time and patient name back to the caller and get a yes."
+    "3. Ask the caller briefly what the visit is for and pass it as reason. If they would rather not say, book without it. "
+    "4. Before calling book_appointment, repeat the doctor, centre, date, time and patient name back to the caller and get a yes."
 )
 DEFAULT_STAGES = {
     "stt": {"provider": "sarvam", "model": "saaras:v3", "language": "unknown",

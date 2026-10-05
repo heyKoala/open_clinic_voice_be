@@ -98,7 +98,30 @@ class TestRock8Tools:
         appt = Appointment.objects.get(id=res.data["appointment_id"])
         assert appt.patient == patient
         assert appt.doctor == doctor
-        
+        assert appt.reason == "AI booked appointment"
+
+    def test_book_appointment_stores_reason(self, api_client, clinic, doctor, patient, rock8_headers):
+        target_date = timezone.localtime().date() + timedelta(days=1)
+
+        res = api_client.post(
+            f"/api/v1/ai/tools/rock8/{clinic.id}/book/",
+            {
+                "doctor_id": doctor.id,
+                "date": target_date.isoformat(),
+                "time": "14:00",
+                "patient_phone": "1234567890",
+                "patient_name": "Kavya Rao",
+                "reason": "  Fever and cough for 3 days  " + "x" * 300
+            },
+            format='json',
+            **rock8_headers
+        )
+
+        assert res.data["success"] is True
+        appt = Appointment.objects.get(id=res.data["appointment_id"])
+        assert appt.reason.startswith("Fever and cough for 3 days")
+        assert len(appt.reason) == 255
+
     def test_book_appointment_auto_create_patient(self, api_client, clinic, doctor, rock8_headers):
         target_date = timezone.localtime().date() + timedelta(days=1)
         

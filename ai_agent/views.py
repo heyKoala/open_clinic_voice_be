@@ -118,7 +118,8 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
                 {"name": "date", "type": "string", "description": "The date in YYYY-MM-DD", "location": "body", "required": True},
                 {"name": "time", "type": "string", "description": "The time of the appointment", "location": "body", "required": True},
                 {"name": "patient_phone", "type": "string", "description": "Patient's phone number", "location": "body", "required": True},
-                {"name": "patient_name", "type": "string", "description": "Patient's full name", "location": "body", "required": True}
+                {"name": "patient_name", "type": "string", "description": "Patient's full name", "location": "body", "required": True},
+                {"name": "reason", "type": "string", "description": "Why the patient wants to see the doctor, in a few words (e.g. 'fever and cough for 3 days')", "location": "body", "required": False}
             ]
         },
         {
