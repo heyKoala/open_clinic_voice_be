@@ -38,3 +38,9 @@ dump.rdb
 
 # Database backups taken before data trims
 backups/
+
+# Secrets Manager payload generated for DevOps, never commit
+aws-secret.json
+
+# Reference documents kept locally
+PYTHON_AWS_Secrets_Manager_Integration_Guide*.pdf
