@@ -54,3 +54,17 @@ def auto_complete_expired_appointments():
         Appointment.Status.SCHEDULED, Appointment.Status.NO_SHOW, QueueToken.Status.SKIPPED, cutoff_time, now
     )
     return f"Completed {completed} appointments and marked {no_shows} as no-shows."
+
+
+@shared_task
+def plan_patient_calls():
+    """Catch-up for reminder and feedback calls (each appointment save already plans its own)."""
+    from appointments import journey
+    return f"Checked {journey.plan_all()} appointments for reminder and feedback calls."
+
+
+@shared_task
+def dispatch_patient_calls():
+    """The AI dials the reminder and feedback calls that are due (hospitals that switched it on)."""
+    from appointments import outbound
+    return f"Placed {outbound.dispatch_due()} AI calls."

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 from django.conf import settings
 from django.db import transaction
+from django.db import models
 from django.shortcuts import get_object_or_404
 
 from doctors.models import Doctor, DoctorAbsence
@@ -426,6 +427,8 @@ class AIToolCancelAppointmentView(AIToolBaseView):
 
         return Response({
             "success": True,
+            # Echoed so the call's transcript records which appointment was cancelled (links the call to its doctor).
+            "appointment_id": appt.id,
             "message": "Appointment cancelled successfully."
         })
 
@@ -521,16 +524,25 @@ class AIToolSendWhatsAppConfirmationView(AIToolBaseView):
 class AIToolListDoctorsView(AIToolBaseView):
     def get(self, request, *args, **kwargs):
         group = self.get_group(kwargs)
-        doctors = Doctor.objects.filter(clinic__in=group, is_active=True).select_related("clinic").order_by("clinic__name", "full_name")
+        # Main hospital first, then its centres: the agent should book at the main hospital unless asked otherwise.
+        doctors = (Doctor.objects.filter(clinic__in=group, is_active=True).select_related("clinic")
+                   .order_by(models.F("clinic__parent_id").asc(nulls_first=True), "clinic__name", "full_name"))
 
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         data = []
         for d in doctors:
+            days = [day_names[i - 1] for i in sorted(d.working_days or []) if 1 <= i <= 7]
+            hours = (f"{d.available_from:%I:%M %p} to {d.available_to:%I:%M %p}".replace(" 0", " ").lstrip("0")
+                     if d.available_from and d.available_to else "")
             data.append({
                 "id": d.id,
                 "name": d.full_name,
                 "specialty": d.specialty,
                 "centre": d.clinic.name,
                 "centre_address": d.clinic.address,
+                # So the agent can answer "is she available tomorrow?" without probing slots day by day.
+                "days": ", ".join(days),
+                "hours": hours,
             })
 
         return Response({

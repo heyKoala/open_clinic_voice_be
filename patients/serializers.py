@@ -11,10 +11,11 @@ phone_validator = RegexValidator(
 
 
 class PatientSerializer(serializers.ModelSerializer):
+    clinic_name = serializers.CharField(source='clinic.name', read_only=True)
     class Meta:
         model = Patient
         fields = ["id","full_name","date_of_birth","gender","blood_group","phone","email","emergency_contact_name","emergency_contact_phone","preferred_language",#"abha_number",
-        "notes","is_active","created_at","updated_at"]
+        "notes","is_active","created_at","updated_at", "clinic_name"]
         read_only_fields = ["id","created_at","updated_at"]
 
     def validate_phone(self, value):

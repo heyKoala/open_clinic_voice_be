@@ -35,3 +35,6 @@ dump.rdb
 .vscode/
 .idea/
 .claude/
+
+# Database backups taken before data trims
+backups/

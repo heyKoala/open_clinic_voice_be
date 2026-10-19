@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.conf import settings
 from django.db import transaction
 from django.db.models import F, Q
 from django.db.models import Avg, Count, Sum, ExpressionWrapper, DurationField
 from django.db.models.functions import Coalesce, TruncDate
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -21,7 +21,7 @@ import django_filters
 import logging
 
 from accounts.models import User
-from accounts.permissions import AuthenticatedAndVerified, IsClinicAdmin
+from accounts.permissions import AuthenticatedAndVerified, IsAdminOrReceptionist, IsClinicAdmin
 from audit.models import AuthEvent
 from appointments.models import Appointment
 from followups.models import FollowUp
@@ -56,59 +56,175 @@ def _parse_days(request, default=30, maximum=365):
     return min(max(days, 1), maximum)
 
 
-class AIAnalyticsDashboardView(APIView):
-    """AI call analytics scoped to the requesting clinic."""
-    permission_classes = [IsClinicAdmin]
+def _parse_period(request, default=30):
+    """(since, until, days) for the analytics: ?start=YYYY-MM-DD[&end=YYYY-MM-DD] in the clinic's
+    local dates, else the last ?days (until is then None, i.e. up to now)."""
+    start = parse_date(request.query_params.get("start") or "")
+    if start:
+        end = parse_date(request.query_params.get("end") or "") or timezone.localdate()
+        if end < start:
+            start, end = end, start
+        since = timezone.make_aware(datetime.combine(start, time.min))
+        until = timezone.make_aware(datetime.combine(end, time.max))
+        return since, until, (end - start).days + 1
+    days = _parse_days(request, default)
+    return timezone.now() - timedelta(days=days), None, days
 
-    def get(self, request):
-        days = _parse_days(request)
-        since = timezone.now() - timedelta(days=days)
-        clinic = request.clinic
 
-        calls = CallLog.objects.filter(clinic=clinic, occurred_at__gte=since)
+def _doctor_param(request):
+    """?doctor=<id>, or None."""
+    value = request.query_params.get("doctor") or ""
+    return int(value) if value.isdigit() else None
 
-        total = calls.count()
-        inbound = calls.filter(direction=CallLog.Direction.INBOUND).count()
-        outbound = calls.filter(direction=CallLog.Direction.OUTBOUND).count()
 
-        avg_dur = calls.aggregate(avg=Avg('duration_seconds'))['avg'] or 0
+def _analytics_calls(request, since, until):
+    """The calls the AI analytics cover, and how many test calls the period had.
 
-        booked = calls.filter(outcome__icontains='booked').count()
-        cancelled_calls = calls.filter(outcome__icontains='cancel').count()
-        info_only = calls.filter(outcome__icontains='info').count()
-        unanswered = calls.filter(outcome__icontains='unanswer').count()
-        other = total - booked - cancelled_calls - info_only - unanswered
+    Filters: period, ?direction, ?language, ?doctor (calls that booked or cancelled with that doctor).
+    Staff test calls aren't patients calling: left out unless ?include_tests=1.
+    """
+    # The phone line is shared by every centre, so calls are counted hospital-wide whichever centre is selected.
+    calls = CallLog.objects.filter(clinic__in=request.clinic.root.group_clinics(), occurred_at__gte=since)
+    if until:
+        calls = calls.filter(occurred_at__lte=until)
+    for field in ("direction", "language"):
+        if request.query_params.get(field):
+            calls = calls.filter(**{field: request.query_params[field]})
+    doctor = _doctor_param(request)
+    if doctor:
+        calls = calls.filter(appointment__doctor_id=doctor)
+    test_calls = calls.filter(is_test=True).count()
+    if request.query_params.get("include_tests") not in ("1", "true"):
+        calls = calls.filter(is_test=False)
+    return calls, test_calls
 
-        conversion_rate = round(booked / total * 100, 1) if total else 0
 
-        # Daily breakdown for chart
-        daily = (
-            calls
-            .annotate(day=TruncDate('occurred_at'))
+def call_analytics(request) -> dict:
+    """The AI call analytics for the request's filters (what Reports and the Front Desk show)."""
+    since, until, days = _parse_period(request)
+    calls, test_calls = _analytics_calls(request, since, until)
+
+    total = calls.count()
+    inbound = calls.filter(direction=CallLog.Direction.INBOUND).count()
+    outbound = calls.filter(direction=CallLog.Direction.OUTBOUND).count()
+
+    avg_dur = calls.aggregate(avg=Avg('duration_seconds'))['avg'] or 0
+
+    booked = calls.filter(outcome__icontains='booked').count()
+    cancelled_calls = calls.filter(outcome__icontains='cancel').count()
+    rescheduled = calls.filter(outcome__icontains='resched').count()
+    info_only = calls.filter(outcome__icontains='info').count()
+    needs_callback = calls.filter(outcome__icontains='callback').count()
+    unanswered = calls.filter(outcome__icontains='unanswer').count()
+    other = total - booked - cancelled_calls - rescheduled - info_only - needs_callback - unanswered
+
+    conversion_rate = round(booked / total * 100, 1) if total else 0
+
+    # Daily breakdown for chart
+    daily = (
+        calls
+        .annotate(day=TruncDate('occurred_at'))
+        .values('day')
+        .annotate(total=Count('id'), converted=Count('id', filter=Q(outcome__icontains='booked')))
+        .order_by('day')
+    )
+
+    return {
+        "period_days": days,
+        "summary": {
+            "total_calls": total,
+            "inbound_calls": inbound,
+            "outbound_calls": outbound,
+            "avg_duration_seconds": round(avg_dur),
+            "booking_conversion_rate": conversion_rate,
+            "calls_with_booking": booked,
+            "calls_cancelled": cancelled_calls,
+            "calls_info_only": info_only,
+            "calls_rescheduled": rescheduled,
+            "calls_needs_callback": needs_callback,
+            "calls_unanswered": unanswered,
+            "calls_other": max(other, 0),
+            "patients_reached": calls.exclude(patient=None).values("patient").distinct().count(),
+            "total_duration_seconds": calls.aggregate(total=Sum("duration_seconds"))["total"] or 0,
+            "test_calls": test_calls,
+        },
+        "language_breakdown": dict(calls.values_list("language").annotate(total=Count("id")).order_by()),
+        # How callers felt; "not_rated": no sentiment yet (no provider analysis, or rating is off).
+        "sentiment_breakdown": {
+            **{value: 0 for value in CallLog.Sentiment.values},
+            **dict(calls.exclude(sentiment="").values_list("sentiment").annotate(total=Count("id")).order_by()),
+            "not_rated": calls.filter(sentiment="").count(),
+        },
+        "calls_by_day": [
+            {"date": str(row["day"]), "total": row["total"], "converted": row["converted"]}
+            for row in daily
+        ],
+    }
+
+
+def doctor_performance(request) -> dict:
+    """Appointments, completion, waits and follow-ups per doctor for the period (?doctor= for one doctor)."""
+    since, until, days = _parse_period(request)
+    clinic = request.clinic
+
+    from clinics.context import scope_clinics
+    doctors = Doctor.objects.filter(clinic__in=scope_clinics(request), is_active=True)
+    if _doctor_param(request):
+        doctors = doctors.filter(id=_doctor_param(request))
+    results = []
+
+    for doctor in doctors:
+        apps = Appointment.objects.filter(doctor=doctor, starts_at__gte=since)
+        if until:
+            apps = apps.filter(starts_at__lte=until)
+        total_apps = apps.count()
+        if total_apps == 0:
+            continue
+
+        completed_apps = apps.filter(status=Appointment.Status.COMPLETED).count()
+
+        queue = QueueToken.objects.filter(doctor=doctor, service_date__gte=timezone.localdate(since), checked_in_at__isnull=False)
+        if until:
+            queue = queue.filter(service_date__lte=timezone.localdate(until))
+        wait_exp = ExpressionWrapper(Coalesce(F('served_at'), timezone.now()) - F('checked_in_at'), output_field=DurationField())
+        avg_wait = queue.annotate(w=wait_exp).aggregate(avg=Avg('w'))['avg']
+        avg_wait_sec = avg_wait.total_seconds() if avg_wait else 0
+
+        followups = FollowUp.objects.filter(doctor=doctor, created_at__gte=since)
+        if until:
+            followups = followups.filter(created_at__lte=until)
+        followups = followups.count()
+        return_rate = round((followups / total_apps) * 100, 1)
+
+        daily_breakdown = (
+            apps.annotate(day=TruncDate('starts_at'))
             .values('day')
-            .annotate(total=Count('id'), converted=Count('id', filter=Q(outcome__icontains='booked')))
+            .annotate(total=Count('id'))
             .order_by('day')
         )
 
-        return Response({
-            "period_days": days,
-            "summary": {
-                "total_calls": total,
-                "inbound_calls": inbound,
-                "outbound_calls": outbound,
-                "avg_duration_seconds": round(avg_dur),
-                "booking_conversion_rate": conversion_rate,
-                "calls_with_booking": booked,
-                "calls_cancelled": cancelled_calls,
-                "calls_info_only": info_only,
-                "calls_unanswered": unanswered,
-                "calls_other": max(other, 0),
-            },
-            "calls_by_day": [
-                {"date": str(row["day"]), "total": row["total"], "converted": row["converted"]}
-                for row in daily
-            ],
+        results.append({
+            "doctor_id": doctor.id,
+            "doctor_name": doctor.full_name,
+            "specialty": doctor.specialty,
+            "degree": doctor.degree,
+            "total_appointments": total_apps,
+            "completed_appointments": completed_apps,
+            "avg_wait_seconds": round(avg_wait_sec),
+            "return_rate": return_rate,
+            "appointments_by_day": [{"date": str(row['day']), "total": row['total']} for row in daily_breakdown]
         })
+
+    results.sort(key=lambda x: x['total_appointments'], reverse=True)
+    return {"period_days": days, "doctors": results}
+
+
+class AIAnalyticsDashboardView(APIView):
+    """AI call analytics scoped to the requesting clinic (the front desk sees them too: it reads the call logs)."""
+    permission_classes = [IsClinicAdmin | IsAdminOrReceptionist]
+
+    def get(self, request):
+        return Response(call_analytics(request))
 
 
 class DoctorAnalyticsDashboardView(APIView):
@@ -116,54 +232,40 @@ class DoctorAnalyticsDashboardView(APIView):
     permission_classes = [IsClinicAdmin]
 
     def get(self, request):
-        days = _parse_days(request)
-        since = timezone.now() - timedelta(days=days)
-        clinic = request.clinic
+        return Response(doctor_performance(request))
 
-        doctors = Doctor.objects.filter(clinic=clinic, is_active=True)
-        results = []
 
-        for doctor in doctors:
-            apps = Appointment.objects.filter(doctor=doctor, starts_at__gte=since)
-            total_apps = apps.count()
-            if total_apps == 0:
-                continue
+class AnalyticsExportView(APIView):
+    """The Reports page as an Excel workbook, for the same filters (?start, ?end, ?direction, ?language, ?doctor)."""
+    permission_classes = [IsClinicAdmin]
 
-            completed_apps = apps.filter(status=Appointment.Status.COMPLETED).count()
-            
-            queue = QueueToken.objects.filter(doctor=doctor, service_date__gte=timezone.localdate(since), checked_in_at__isnull=False)
-            wait_exp = ExpressionWrapper(Coalesce(F('served_at'), timezone.now()) - F('checked_in_at'), output_field=DurationField())
-            avg_wait = queue.annotate(w=wait_exp).aggregate(avg=Avg('w'))['avg']
-            avg_wait_sec = avg_wait.total_seconds() if avg_wait else 0
+    def get(self, request):
+        from .analytics_export import build_workbook
 
-            followups = FollowUp.objects.filter(doctor=doctor, created_at__gte=since).count()
-            return_rate = round((followups / total_apps) * 100, 1)
+        since, until, _ = _parse_period(request)
+        calls, _ = _analytics_calls(request, since, until)
+        doctor = Doctor.objects.filter(clinic=request.clinic, id=_doctor_param(request)).first() if _doctor_param(request) else None
+        content = build_workbook(
+            clinic=request.clinic,
+            since=since,
+            until=until or timezone.now(),
+            filters={
+                "Direction": request.query_params.get("direction") or "All",
+                "Language": request.query_params.get("language") or "All",
+                "Doctor": f"Dr. {doctor.full_name}" if doctor else "All doctors",
+            },
+            analytics=call_analytics(request),
+            doctors=doctor_performance(request)["doctors"],
+            calls=calls.select_related("patient", "appointment__doctor").order_by("-occurred_at"),
+        )
+        start = timezone.localdate(since).isoformat()
+        end = timezone.localdate(until or timezone.now()).isoformat()
+        response = HttpResponse(
+            content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="call-report_{start}_to_{end}.xlsx"'
+        return response
 
-            daily_breakdown = (
-                apps.annotate(day=TruncDate('starts_at'))
-                .values('day')
-                .annotate(total=Count('id'))
-                .order_by('day')
-            )
-
-            results.append({
-                "doctor_id": doctor.id,
-                "doctor_name": doctor.full_name,
-                "specialty": doctor.specialty,
-                "degree": doctor.degree,
-                "total_appointments": total_apps,
-                "completed_appointments": completed_apps,
-                "avg_wait_seconds": round(avg_wait_sec),
-                "return_rate": return_rate,
-                "appointments_by_day": [{"date": str(row['day']), "total": row['total']} for row in daily_breakdown]
-            })
-
-        results.sort(key=lambda x: x['total_appointments'], reverse=True)
-
-        return Response({
-            "period_days": days,
-            "doctors": results
-        })
 
 class DashboardMetricsView(APIView):
     """Admin-only aggregates derived directly from the clinic's records."""

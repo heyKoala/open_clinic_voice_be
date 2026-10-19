@@ -34,9 +34,30 @@ def eager_celery():
 
 
 @pytest.fixture(autouse=True)
+def no_background_recording_fetch(settings):
+    """Tests run the eager task inline, never on a timer thread that would outlive the test."""
+    settings.RECORDING_FETCH_IN_THREAD = False
+
+
+@pytest.fixture(autouse=True)
 def no_whatsapp_confirmation_webhook(settings):
     """A developer's .env may point at the real webhook; tests must never message patients."""
     settings.WHATSAPP_CONFIRMATION_WEBHOOK_URL = ""
+
+
+@pytest.fixture(autouse=True)
+def no_sentiment_model(settings):
+    """A developer's .env may hold a real AI key; tests must never send transcripts to it. Tests that rate
+    sentiment set their own key (and get the default OpenAI-style endpoint unless they say otherwise)."""
+    settings.SENTIMENT_API_KEY = ""
+    settings.SENTIMENT_API_BASE = "https://api.openai.com/v1"
+    settings.SENTIMENT_MODEL = "gpt-4o-mini"
+
+
+@pytest.fixture(autouse=True)
+def temp_media(settings, tmp_path):
+    """Uploads in tests (knowledge documents, recordings) go to a throwaway folder, not the real media/."""
+    settings.MEDIA_ROOT = tmp_path / "media"
 
 
 @pytest.fixture(autouse=True)

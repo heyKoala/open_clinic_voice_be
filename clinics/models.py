@@ -165,3 +165,39 @@ class ClinicPhoneNumber(TrackedModel):
 
 	def __str__(self) -> str:
 		return f"+{self.number} ({self.clinic.name})"
+
+
+class ClinicIntegration(TrackedModel):
+	"""A connection to one of the clinic's own systems (WhatsApp via WATI, its doctor/appointment system).
+
+	Owned by a main clinic and shared by its centres, like the phone number. ``settings`` holds the plain
+	options (endpoint, template names); the credential is kept encrypted in ``secret_encrypted``
+	(clinics.secrets) and never sent back to the browser.
+	"""
+
+	class Provider(models.TextChoices):
+		WATI = "wati", "WhatsApp (WATI)"
+		PMS = "pms", "Doctor & appointment system"
+		RAZORPAY = "razorpay", "Razorpay"
+
+	class Status(models.TextChoices):
+		UNTESTED = "untested", "Saved, not tested"
+		CONNECTED = "connected", "Connected"
+		ERROR = "error", "Connection failed"
+
+	clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name="integrations")
+	provider = models.CharField(max_length=20, choices=Provider.choices)
+	settings = models.JSONField(default=dict, blank=True)
+	secret_encrypted = models.TextField(blank=True)
+	status = models.CharField(max_length=20, choices=Status.choices, default=Status.UNTESTED)
+	last_checked_at = models.DateTimeField(null=True, blank=True)
+	last_error = models.TextField(blank=True)
+	# When the provider's webhook last delivered an event: a patient's WATI message, a Razorpay payment
+	# update. Shows the webhook is set up.
+	last_message_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		constraints = [models.UniqueConstraint(fields=["clinic", "provider"], name="uniq_clinic_integration")]
+
+	def __str__(self) -> str:
+		return f"{self.get_provider_display()} ({self.clinic.name})"

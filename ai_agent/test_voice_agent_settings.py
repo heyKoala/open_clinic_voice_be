@@ -136,3 +136,73 @@ def test_catalog_is_proxied_with_the_server_side_key(admin_client, clinic, setti
     assert get.call_args.kwargs["headers"]["X-API-Key"] == "server-key"
     assert get.call_args.kwargs["params"] == {"model": "bulbul:v3"}
     assert admin_client.get(URL + "providers/?type=video").status_code == 400
+
+
+# ---------------------------------------------------------------------------------------------
+# Call audio and listening: noise cancellation, recording notice, listening preset, silence limit.
+# ---------------------------------------------------------------------------------------------
+
+def _inbound_ok():
+    response = mock.Mock(status_code=200, text="")
+    response.json.return_value = {"ok": True}
+    return response
+
+
+def test_call_audio_defaults_are_sent_with_every_call(admin_client, api_client, clinic, settings):
+    settings.ROCK8_INBOUND_TRUNK_ID = settings.ROCK8_INBOUND_RULE_ID = ""  # not from the developer's .env
+    res = admin_client.get(URL)
+    assert res.data["noise_cancellation"] is True and res.data["recording_disclosure"] is False
+    assert res.data["listening"] == "balanced" and res.data["max_silence_seconds"] == 60
+    assert [o["id"] for o in res.data["listening_options"]] == ["patient", "balanced", "quick"]
+    assert res.data["inbound_number"] == {"configured": False}
+
+    config = _call_config(api_client, clinic)
+    assert config["max_silence_seconds"] == 60 and config["thinking_sound"] is True
+    assert config["vad_config"]["min_silence_duration"] == 0.45
+
+
+def test_saved_call_audio_changes_the_call_config_and_is_pushed_to_the_number(admin_client, api_client, clinic, settings):
+    settings.ROCK8_API_KEY, settings.ROCK8_INBOUND_TRUNK_ID, settings.ROCK8_INBOUND_RULE_ID = "k", "ST_in", "SDR_in"
+    settings.VOICE_WORKER_URL = "https://worker.example.com"
+    body = {**STANDARD, "noise_cancellation": True, "noise_cancellation_level": 20, "recording_disclosure": True,
+            "listening": "patient", "max_silence_seconds": 45, "thinking_sound": False}
+    with mock.patch("ai_agent.inbound.requests.put", return_value=_inbound_ok()) as put:
+        res = admin_client.put(URL, data=json.dumps(body), content_type="application/json")
+    assert res.status_code == 200, res.data
+    assert res.data["inbound_applied"] == {"ok": True, "detail": "Applied to calls on the hospital number."}
+    assert put.call_args.args[0] == "https://worker.example.com/inbound/update"
+    assert put.call_args.kwargs["json"] == {"sip_trunk_id": "ST_in", "dispatch_rule_id": "SDR_in", "noise_cancellation": True,
+                                            "noise_cancellation_level": 20, "recording_disclosure": True}
+
+    config = _call_config(api_client, clinic)
+    assert (config["max_silence_seconds"], config["thinking_sound"]) == (45, False)
+    assert config["vad_config"]["min_silence_duration"] == 0.8
+
+    # Every save re-applies the flags to the number (cheap, and keeps the number from drifting from the page).
+    with mock.patch("ai_agent.inbound.requests.put", return_value=_inbound_ok()) as put:
+        res = admin_client.put(URL, data=json.dumps({**body, "max_silence_seconds": 50}), content_type="application/json")
+    assert res.status_code == 200 and res.data["inbound_applied"]["ok"] is True and put.called
+
+
+def test_noise_cancellation_off_drops_the_level_and_warns_without_inbound_ids(admin_client, clinic, settings):
+    settings.ROCK8_INBOUND_TRUNK_ID = settings.ROCK8_INBOUND_RULE_ID = ""
+    body = {**STANDARD, "noise_cancellation": False, "noise_cancellation_level": 40}
+    with mock.patch("ai_agent.inbound.requests.put") as put:
+        res = admin_client.put(URL, data=json.dumps(body), content_type="application/json")
+    assert res.status_code == 200 and not put.called
+    assert res.data["inbound_applied"]["ok"] is False and "ROCK8_INBOUND_TRUNK_ID" in res.data["inbound_applied"]["detail"]
+    from ai_agent.agent_settings import call_flags
+    assert call_flags(clinic) == {"noise_cancellation": False, "recording_disclosure": False}
+    assert call_flags(clinic, for_web_call=True) == {"noise_cancellation": False}
+
+
+@pytest.mark.parametrize("change, field", [
+    ({"noise_cancellation_level": 99}, "noise_cancellation_level"),
+    ({"noise_cancellation_level": "loud"}, "noise_cancellation_level"),
+    ({"listening": "eager"}, "listening"),
+    ({"max_silence_seconds": 5}, "max_silence_seconds"),
+    ({"thinking_sound": "yes"}, "thinking_sound"),
+])
+def test_invalid_call_audio_is_rejected(admin_client, clinic, change, field):
+    res = admin_client.put(URL, data=json.dumps({**STANDARD, **change}), content_type="application/json")
+    assert res.status_code == 400 and field in res.data

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 from rest_framework import status
 from django.utils import timezone
@@ -153,6 +155,52 @@ class TestDashboardMetrics:
         assert receptionist_client.get("/api/v1/reports/dashboard/").status_code == status.HTTP_403_FORBIDDEN
 
 
+class TestAIAnalytics:
+    def _call(self, clinic, when, **fields):
+        from ai_agent.models import CallLog
+        defaults = {"direction": "inbound", "language": "en", "outcome": "Appointment booked", "duration_seconds": 60}
+        return CallLog.objects.create(clinic=clinic, occurred_at=when, **{**defaults, **fields})
+
+    def test_date_range_and_filters(self, admin_client, clinic):
+        patient = Patient.objects.create(clinic=clinic, full_name="John Doe")
+        now = timezone.now()
+        self._call(clinic, now, patient=patient)
+        self._call(clinic, now, patient=patient, language="hi", outcome="Cancelled", duration_seconds=30)
+        self._call(clinic, now, direction="outbound", outcome="Info only")
+        self._call(clinic, now - timedelta(days=40))  # outside the range
+
+        today = timezone.localdate().isoformat()
+        res = admin_client.get(f"/api/v1/reports/ai-analytics/?start={today}&end={today}")
+        assert res.status_code == status.HTTP_200_OK
+        summary = res.data["summary"]
+        assert summary["total_calls"] == 3
+        assert summary["calls_with_booking"] == 1
+        assert summary["calls_cancelled"] == 1
+        assert summary["patients_reached"] == 1
+        assert summary["total_duration_seconds"] == 150
+        assert res.data["language_breakdown"] == {"en": 2, "hi": 1}
+        assert res.data["period_days"] == 1
+
+        res = admin_client.get(f"/api/v1/reports/ai-analytics/?start={today}&direction=inbound&language=en")
+        assert res.data["summary"]["total_calls"] == 1
+
+        # Without a range it still covers the last ?days.
+        assert admin_client.get("/api/v1/reports/ai-analytics/?days=60").data["summary"]["total_calls"] == 4
+
+    def test_call_logs_filter_by_outcome_keyword(self, admin_client, clinic):
+        now = timezone.now()
+        booked = self._call(clinic, now)
+        self._call(clinic, now, outcome="Cancelled")
+        res = admin_client.get("/api/v1/ai/call-logs/?outcome=booked")
+        assert [row["id"] for row in res.data["results"]] == [booked.id]
+
+    def test_front_desk_sees_call_analytics_but_doctors_do_not(self, receptionist_client, doctor_client):
+        assert receptionist_client.get("/api/v1/reports/ai-analytics/").status_code == status.HTTP_200_OK
+        assert doctor_client.get("/api/v1/reports/ai-analytics/").status_code == status.HTTP_403_FORBIDDEN
+        # The clinic-wide and per-doctor dashboards stay admin-only.
+        assert receptionist_client.get("/api/v1/reports/doctor-analytics/").status_code == status.HTTP_403_FORBIDDEN
+
+
 class TestLiveQueue:
     def test_live_queue_computes_wait_times(self, doctor_client, clinic, doctor_user):
         patient = Patient.objects.create(clinic=clinic, full_name="John Doe")
@@ -180,3 +228,52 @@ class TestLiveQueue:
         assert summary["total"] == 1
         assert summary["waiting"] == 1
         assert summary["average_wait_seconds"] >= 900  # at least 15 minutes
+
+class TestDoctorFilterAndExport:
+    def _setup(self, clinic):
+        from ai_agent.models import CallLog
+        patient = Patient.objects.create(clinic=clinic, full_name="Asha Menon", phone="9876543210")
+        doctors = []
+        for name in ("Anvi Pillai", "Darsh Sanghvi"):
+            user = User.objects.create_user(clinic=clinic, email=f"{name.split()[0].lower()}@example.com", password="pwd", role=User.Role.DOCTOR)
+            doctors.append(Doctor.objects.create(clinic=clinic, user=user, full_name=name))
+        now = timezone.now()
+        appts = [Appointment.objects.create(clinic=clinic, patient=patient, doctor=d, starts_at=now, ends_at=now) for d in doctors]
+        CallLog.objects.create(clinic=clinic, patient=patient, direction="inbound", occurred_at=now, outcome="appointment_booked", appointment=appts[0], duration_seconds=60)
+        CallLog.objects.create(clinic=clinic, patient=patient, direction="inbound", occurred_at=now, outcome="appointment_cancelled", appointment=appts[1], duration_seconds=30)
+        CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="information_only")
+        return doctors
+
+    def test_doctor_filter(self, admin_client, clinic):
+        anvi, darsh = self._setup(clinic)
+        today = timezone.localdate().isoformat()
+        everyone = admin_client.get(f"/api/v1/reports/ai-analytics/?start={today}").data["summary"]
+        anvis = admin_client.get(f"/api/v1/reports/ai-analytics/?start={today}&doctor={anvi.id}").data["summary"]
+        assert (everyone["total_calls"], anvis["total_calls"], anvis["calls_with_booking"], anvis["calls_cancelled"]) == (3, 1, 1, 0)
+
+        rows = admin_client.get(f"/api/v1/ai/call-logs/?doctor={darsh.id}").data["results"]
+        assert [(r["outcome"], r["doctor"], r["doctor_name"]) for r in rows] == [("appointment_cancelled", darsh.id, "Darsh Sanghvi")]
+
+        performance = admin_client.get(f"/api/v1/reports/doctor-analytics/?start={today}&doctor={anvi.id}").data["doctors"]
+        assert [d["doctor_id"] for d in performance] == [anvi.id]
+
+    def test_excel_download_follows_the_filters(self, admin_client, receptionist_client, clinic):
+        from io import BytesIO
+        from openpyxl import load_workbook
+        anvi, _ = self._setup(clinic)
+        today = timezone.localdate().isoformat()
+
+        res = admin_client.get(f"/api/v1/reports/ai-analytics/export/?start={today}&doctor={anvi.id}")
+        assert res.status_code == status.HTTP_200_OK
+        assert res["Content-Type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml")
+        assert f'call-report_{today}_to_{today}.xlsx' in res["Content-Disposition"]
+
+        wb = load_workbook(BytesIO(res.content))
+        assert wb.sheetnames == ["Summary", "Daily calls", "Outcomes", "Sentiment", "Languages", "Doctors", "Call logs"]
+        summary = {row[0]: row[1] for row in wb["Summary"].iter_rows(values_only=True) if row and row[0]}
+        assert summary["Doctor"] == "Dr. Anvi Pillai" and summary["Total calls"] == 1
+        calls = list(wb["Call logs"].iter_rows(min_row=2, values_only=True))
+        assert [(c[1], c[6], c[8]) for c in calls] == [("Asha Menon", "Appointment booked", "Dr. Anvi Pillai")]
+        assert [r[0] for r in wb["Doctors"].iter_rows(min_row=2, values_only=True)] == ["Dr. Anvi Pillai"]
+
+        assert receptionist_client.get("/api/v1/reports/ai-analytics/export/").status_code == status.HTTP_403_FORBIDDEN

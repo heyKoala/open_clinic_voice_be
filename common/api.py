@@ -2,20 +2,22 @@ from rest_framework import viewsets
 from rest_framework.exceptions import PermissionDenied
 
 from accounts.permissions import AuthenticatedAndVerified
+from clinics.context import in_scope, scope_clinics
 from common.audit import log_data_change, is_sensitive_field
 
 
 class ClinicScopedModelViewSet(viewsets.ModelViewSet):
     permission_classes = [AuthenticatedAndVerified]
     def get_queryset(self):
-        return super().get_queryset().filter(clinic=self.request.clinic)
+        # One centre, or (X-Active-Clinic-Id: all) every centre of the hospital.
+        return super().get_queryset().filter(clinic__in=scope_clinics(self.request))
     def perform_create(self, serializer):
         instance = serializer.save(clinic=self.request.clinic)
         log_data_change(instance, "create", request=self.request)
         return instance
 
     def perform_update(self, serializer):
-        if serializer.instance.clinic_id != self.request.clinic.id:
+        if not in_scope(self.request, serializer.instance.clinic_id):
             raise PermissionDenied("Cross-clinic updates are not permitted.")
         
         # Log sensitive field changes
@@ -33,7 +35,7 @@ class ClinicScopedModelViewSet(viewsets.ModelViewSet):
         return instance
 
     def perform_destroy(self, instance):
-        if instance.clinic_id != self.request.clinic.id:
+        if not in_scope(self.request, instance.clinic_id):
             raise PermissionDenied("Cross-clinic deletes are not permitted.")
         
         # Soft delete if model has is_active field

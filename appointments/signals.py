@@ -34,3 +34,12 @@ def notify_appointment_change(sender, instance, created, **kwargs):
     # so also sending to the doctor's group delivered each event twice.
     if instance.clinic_id:
         broadcast_event(f"clinic_{instance.clinic_id}", event_type, data)
+
+
+@receiver(post_save, sender=Appointment)
+def plan_patient_calls(sender, instance, raw=False, **kwargs):
+    # Booked, moved, cancelled or completed: keep its reminder and feedback calls in step.
+    if raw or not instance.clinic_id:
+        return
+    from appointments import journey
+    journey.sync(instance)

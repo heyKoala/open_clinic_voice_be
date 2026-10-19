@@ -40,6 +40,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from ai_agent.models import CallLog
+from ai_agent.sentiment import classify_transcript, normalize_sentiment, rate_transcript, summarize_transcript
 from patients.models import Patient
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,20 @@ def _as_int(value, default=0):
         return default
 
 
+def is_placeholder_summary(summary) -> bool:
+    """True for no summary, or the one written at call start before anything was known."""
+    text = (summary or "").strip()
+    return not text or text.startswith("Call from ") or text.startswith("Reminder call to ") or text.startswith("Feedback call to ")
+
+
 def _digits(value) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def e164(value) -> str:
+    """'+<digits>' for a usable phone number, else ''."""
+    digits = _digits(value)
+    return f"+{digits}" if len(digits) >= 10 else ""
 
 
 def match_patient(clinic, *phones):
@@ -119,15 +132,50 @@ def transcript_duration(text) -> int:
     return (turns[-1][0] - turns[0][0]) % (24 * 3600)
 
 
-def booked_appointment_ids(text) -> list[int]:
-    """Appointments the agent booked during the call, read from its successful book_appointment results."""
+def _appointment_ids(text, tools: tuple[str, ...]) -> list[int]:
     ids = []
     for _, kind, body in (_timed_turns(text) if isinstance(text, str) else []):
-        if kind == "TOOL RESULT" and body.startswith("book_appointment") and '"success":true' in body.replace(" ", ""):
+        if kind == "TOOL RESULT" and body.startswith(tools) and '"success":true' in body.replace(" ", ""):
             match = BOOKED_APPOINTMENT.search(body)
             if match:
                 ids.append(int(match.group(1)))
     return ids
+
+
+def booked_appointment_ids(text) -> list[int]:
+    """Appointments the agent booked during the call, read from its successful book_appointment results."""
+    return _appointment_ids(text, ("book_appointment",))
+
+
+def cancelled_appointment_ids(text) -> list[int]:
+    """Appointments the agent cancelled during the call."""
+    return _appointment_ids(text, ("cancel_appointment",))
+
+
+# The outcomes a call on the hospital line can carry. Anything else (in_progress, completed, no_recording)
+# is a placeholder that the UI shows without a tag.
+TAGGED_OUTCOMES = ("appointment_booked", "appointment_cancelled", "rescheduled", "information_only", "needs_callback")
+PLACEHOLDER_OUTCOMES = ("", "in_progress", "completed", "no_recording", "other")
+
+
+def classify_outcome(raw_transcript, transcript: str) -> str | None:
+    """The call's outcome: what the agent's tools did, else what the caller wanted (from the transcript).
+    None when it can't be decided (model off or failed), '' when there is nothing worth tagging."""
+    booked, cancelled = booked_appointment_ids(raw_transcript), cancelled_appointment_ids(raw_transcript)
+    if booked and cancelled:
+        return "rescheduled"
+    if booked:
+        return "appointment_booked"
+    if cancelled:
+        return "appointment_cancelled"
+    if not any(line.startswith("Patient:") for line in (transcript or "").splitlines()):
+        return ""  # the caller never spoke
+    return classify_transcript(transcript)
+
+
+def handled_appointment_ids(text) -> list[int]:
+    """Appointments the agent booked or cancelled during the call, in the order it did so."""
+    return _appointment_ids(text, ("book_appointment", "cancel_appointment"))
 
 
 def format_transcript(raw) -> str:
@@ -238,6 +286,7 @@ def _record_provider_event(clinic, data: dict) -> CallLog | None:
         "agent_name": (agent.get("name") or "ManageOPD AI")[:100],
         "occurred_at": occurred,
         "patient": match_patient(clinic, contact.get("phone"), caller),
+        "phone": e164(caller) or e164(contact.get("phone")),
         "language": str((call.get("variables") or {}).get("language") or "en")[:32],
     }
     updates = {}
@@ -248,6 +297,8 @@ def _record_provider_event(clinic, data: dict) -> CallLog | None:
         summary = analysis.get("summary") or analysis.get("short_summary")
         if summary:
             updates["summary"] = str(summary)
+        if normalize_sentiment(analysis.get("sentiment")):
+            updates["sentiment"] = normalize_sentiment(analysis.get("sentiment"))
     if media.get("recording_url"):
         updates["recording_url"] = str(media["recording_url"])[:1000]
 
@@ -276,6 +327,7 @@ def _record_legacy_event(clinic, data: dict) -> CallLog:
         "language": str(data.get("language") or "en")[:32],
         "occurred_at": timezone.now(),
         "patient": match_patient(clinic, data.get("phone"), data.get("from_number"), data.get("callerNumber")),
+        "phone": e164(data.get("phone")) or e164(data.get("from_number")) or e164(data.get("callerNumber")),
     }
     log = _upsert(clinic, external_id, defaults, updates)
     if updates["recording_url"]:
@@ -308,6 +360,17 @@ def _booked_patient_id(log: CallLog, raw_transcript) -> int | None:
             .order_by("id").values_list("patient_id", flat=True).first())
 
 
+def _handled_appointment_id(log: CallLog, raw_transcript) -> int | None:
+    """The first appointment (within the clinic's group) the agent booked or cancelled during the call, if any."""
+    from appointments.models import Appointment
+
+    ids = handled_appointment_ids(raw_transcript)
+    if not ids:
+        return None
+    found = set(Appointment.objects.filter(id__in=ids, clinic__in=log.clinic.group_clinics()).values_list("id", flat=True))
+    return next((i for i in ids if i in found), None)
+
+
 def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str | None) -> None:
     """Download the transcript (stored as text) and the recording (stored as a file). Raises on HTTP errors."""
     log = CallLog.objects.filter(id=call_log_id).first()
@@ -332,6 +395,25 @@ def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str
             patient_id = _booked_patient_id(log, payload)
             if patient_id:
                 updates["patient_id"] = patient_id
+        if not log.appointment_id:
+            appointment_id = _handled_appointment_id(log, payload)
+            if appointment_id:
+                updates["appointment_id"] = appointment_id
+        # No sentiment from the provider's analysis (e.g. calls on the clinic number): rate the transcript.
+        if not log.sentiment and transcript:
+            sentiment = rate_transcript(transcript)
+            if sentiment:
+                updates["sentiment"] = sentiment
+        # No summary from the provider either: only the call-start placeholder ("Call from +91…"). Write one.
+        if transcript and is_placeholder_summary(log.summary):
+            summary = summarize_transcript(transcript)
+            if summary:
+                updates["summary"] = summary
+        # No outcome from the provider either (inbound calls on the hospital line, test calls): decide it.
+        if transcript and log.direction == CallLog.Direction.INBOUND and log.outcome in PLACEHOLDER_OUTCOMES:
+            outcome = classify_outcome(payload, transcript)
+            if outcome is not None:
+                updates["outcome"] = outcome
         if updates:
             CallLog.objects.filter(id=log.id).update(**updates, updated_at=timezone.now())
     if recording_url and not log.recording_file:

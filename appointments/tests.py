@@ -127,3 +127,19 @@ class TestWalkinEngine:
         assert msg is not None
         assert "has been shifted" in msg.message_text
 
+
+
+class TestBookedByFilter:
+    def test_front_desk_covers_older_manual_bookings(self, admin_client, clinic):
+        patient = Patient.objects.create(clinic=clinic, full_name="Asha")
+        doctor = Doctor.objects.create(clinic=clinic, full_name="Dr. Rao")
+        now = timezone.now()
+        for source in ("front_desk", "manual", "phone", "walk_in"):
+            Appointment.objects.create(clinic=clinic, patient=patient, doctor=doctor, starts_at=now, ends_at=now, source=source)
+
+        def sources(q):
+            return sorted(a["source"] for a in admin_client.get(f"/api/v1/appointments/?source={q}").data["results"])
+
+        assert sources("front_desk") == ["front_desk", "manual"]
+        assert sources("phone") == ["phone"]
+        assert sources("walk_in") == ["walk_in"]

@@ -24,6 +24,14 @@ app.conf.beat_schedule = {
         'task': 'appointments.tasks.auto_complete_expired_appointments',
         'schedule': 300.0,  # Run every 5 minutes
     },
+    'plan-patient-calls': {
+        'task': 'appointments.tasks.plan_patient_calls',
+        'schedule': 300.0,  # every 5 minutes
+    },
+    'dispatch-patient-calls': {
+        'task': 'appointments.tasks.dispatch_patient_calls',
+        'schedule': 60.0,
+    },
     'send-pending-whatsapp-messages': {
         'task': 'patients.tasks.process_pending_messages',
         'schedule': 60.0,

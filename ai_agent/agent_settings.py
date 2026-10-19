@@ -6,7 +6,7 @@ together with the provider's own config keys so that answering a call never need
 """
 from __future__ import annotations
 
-from ai_agent import providers
+from ai_agent import inbound, providers
 from ai_agent.models import VoiceAgentSettings
 
 # "{clinic_name}" is replaced with the main clinic's name.
@@ -45,6 +45,29 @@ STAGES_BY_MODEL_TYPE = {
     VoiceAgentSettings.ModelType.STANDARD: ("stt", "llm", "tts"),
     VoiceAgentSettings.ModelType.REALTIME: ("realtime",),
 }
+# Call audio and listening. ``listening`` picks a voice-activity-detection preset; the worker gets the numbers.
+CALL_DEFAULTS = {
+    "noise_cancellation": True,
+    "noise_cancellation_level": None,   # dB; None = the worker's default (about 30)
+    "recording_disclosure": False,
+    "listening": VoiceAgentSettings.Listening.BALANCED,
+    "max_silence_seconds": 60,
+    "thinking_sound": True,
+}
+CALL_FIELDS = tuple(CALL_DEFAULTS)
+LISTENING_PRESETS = {
+    # min_silence_duration: how long the caller must be quiet before the receptionist takes its turn.
+    VoiceAgentSettings.Listening.PATIENT: {"min_silence_duration": 0.8, "activation_threshold": 0.45, "min_speech_duration": 0.08},
+    VoiceAgentSettings.Listening.BALANCED: {"min_silence_duration": 0.45, "activation_threshold": 0.4, "min_speech_duration": 0.05},
+    VoiceAgentSettings.Listening.QUICK: {"min_silence_duration": 0.25, "activation_threshold": 0.35, "min_speech_duration": 0.05},
+}
+LISTENING_LABELS = {
+    VoiceAgentSettings.Listening.PATIENT: "Patient: waits longer before replying, for callers who pause mid-sentence.",
+    VoiceAgentSettings.Listening.BALANCED: "Balanced: the usual phone-call rhythm.",
+    VoiceAgentSettings.Listening.QUICK: "Quick: replies as soon as the caller stops; may cut in on slow speakers.",
+}
+NOISE_LEVEL_RANGE = (5, 60)
+SILENCE_RANGE = (15, 600)
 MAX_FIRST_MESSAGE = 500
 MAX_SYSTEM_PROMPT = 20000
 
@@ -77,13 +100,75 @@ def effective_settings(root) -> dict:
     model_type = saved.model_type if saved else VoiceAgentSettings.ModelType.STANDARD
     if model_type == VoiceAgentSettings.ModelType.REALTIME and not stages["realtime"].get("provider"):
         model_type = VoiceAgentSettings.ModelType.STANDARD
+    calls = {name: (getattr(saved, name) if saved else default) for name, default in CALL_DEFAULTS.items()}
     return {
         "first_message": (saved.first_message if saved else "") or DEFAULT_FIRST_MESSAGE,
         "system_prompt": (saved.system_prompt if saved else "") or DEFAULT_SYSTEM_PROMPT,
         "model_type": model_type,
         "is_customised": saved is not None,
         **stages,
+        **calls,
     }
+
+
+def call_flags(root, for_web_call: bool = False) -> dict:
+    """The per-call flags for the worker's /call, /webCall and inbound endpoints (noise cancellation and,
+    for phone calls, the recording notice)."""
+    current = effective_settings(root)
+    flags = {"noise_cancellation": bool(current["noise_cancellation"])}
+    if current["noise_cancellation"] and current["noise_cancellation_level"] is not None:
+        flags["noise_cancellation_level"] = int(current["noise_cancellation_level"])
+    if not for_web_call:
+        flags["recording_disclosure"] = bool(current["recording_disclosure"])
+    return flags
+
+
+def session_config(current: dict) -> dict:
+    """The listening/sound part of the config reply, from ``effective_settings``."""
+    preset = LISTENING_PRESETS.get(current["listening"], LISTENING_PRESETS[VoiceAgentSettings.Listening.BALANCED])
+    return {
+        "thinking_sound": bool(current["thinking_sound"]),
+        "max_silence_seconds": int(current["max_silence_seconds"]),
+        "background_sound": False,
+        "vad_config": dict(preset),
+    }
+
+
+def resolve_call_settings(data: dict) -> dict:
+    """Validate the call audio/listening fields; missing ones keep their defaults. Raises InvalidSettings."""
+    errors, out = {}, {}
+    for name in ("noise_cancellation", "recording_disclosure", "thinking_sound"):
+        value = data.get(name, CALL_DEFAULTS[name])
+        if not isinstance(value, bool):
+            errors[name] = "Must be on or off."
+        out[name] = value
+    level = data.get("noise_cancellation_level", CALL_DEFAULTS["noise_cancellation_level"])
+    if level in (None, ""):
+        out["noise_cancellation_level"] = None
+    else:
+        try:
+            level = int(level)
+        except (TypeError, ValueError):
+            errors["noise_cancellation_level"] = "Must be a whole number of dB."
+        else:
+            if not NOISE_LEVEL_RANGE[0] <= level <= NOISE_LEVEL_RANGE[1]:
+                errors["noise_cancellation_level"] = f"Between {NOISE_LEVEL_RANGE[0]} and {NOISE_LEVEL_RANGE[1]} dB."
+            out["noise_cancellation_level"] = level
+    listening = data.get("listening", CALL_DEFAULTS["listening"])
+    if listening not in LISTENING_PRESETS:
+        errors["listening"] = "Choose patient, balanced or quick."
+    out["listening"] = listening
+    try:
+        silence = int(data.get("max_silence_seconds", CALL_DEFAULTS["max_silence_seconds"]))
+    except (TypeError, ValueError):
+        errors["max_silence_seconds"] = "Must be a number of seconds."
+    else:
+        if not SILENCE_RANGE[0] <= silence <= SILENCE_RANGE[1]:
+            errors["max_silence_seconds"] = f"Between {SILENCE_RANGE[0]} and {SILENCE_RANGE[1]} seconds."
+        out["max_silence_seconds"] = silence
+    if errors:
+        raise InvalidSettings(errors)
+    return out
 
 
 def render(text: str, root) -> str:
@@ -161,6 +246,10 @@ def save_settings(root, data: dict) -> VoiceAgentSettings:
             stages[kind] = resolve_stage(kind, data.get(kind))
         except InvalidSettings as exc:
             errors.update(exc.errors)
+    try:
+        calls = resolve_call_settings(data)
+    except InvalidSettings as exc:
+        errors.update(exc.errors)
     if errors:
         raise InvalidSettings(errors)
 
@@ -171,6 +260,8 @@ def save_settings(root, data: dict) -> VoiceAgentSettings:
     record.model_type = model_type
     for kind, stage in stages.items():
         setattr(record, kind, stage)
+    for name, value in calls.items():
+        setattr(record, name, value)
     record.save()
     return record
 
@@ -178,7 +269,10 @@ def save_settings(root, data: dict) -> VoiceAgentSettings:
 def settings_payload(root) -> dict:
     """What the settings page shows (stages without the provider-side ``config``)."""
     current = effective_settings(root)
-    payload = {key: current[key] for key in ("first_message", "system_prompt", "model_type", "is_customised")}
+    payload = {key: current[key] for key in ("first_message", "system_prompt", "model_type", "is_customised", *CALL_FIELDS)}
+    payload["call_defaults"] = dict(CALL_DEFAULTS)
+    payload["listening_options"] = [{"id": key, "label": label} for key, label in LISTENING_LABELS.items()]
+    payload["inbound_number"] = inbound.describe()
     for kind in DEFAULT_STAGES:
         payload[kind] = {key: value for key, value in current[kind].items() if key != "config"}
     payload["defaults"] = {"first_message": DEFAULT_FIRST_MESSAGE, "system_prompt": DEFAULT_SYSTEM_PROMPT}

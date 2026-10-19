@@ -40,6 +40,23 @@ class TestAgentConfigurationIsolation:
         audit = DataChangeEvent.objects.filter(object_id=config.id).first()
         assert audit is not None
 
+class TestCallLogAccess:
+    def test_receptionist_reads_call_logs_but_cannot_change_them(self, receptionist_client, clinic):
+        from django.utils import timezone
+        from ai_agent.models import CallLog
+
+        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="booked")
+
+        res = receptionist_client.get("/api/v1/ai/call-logs/")
+        assert res.status_code == status.HTTP_200_OK
+        assert [row["id"] for row in res.data["results"]] == [log.id]
+        assert receptionist_client.get(f"/api/v1/ai/call-logs/{log.id}/").status_code == status.HTTP_200_OK
+
+        res = receptionist_client.patch(f"/api/v1/ai/call-logs/{log.id}/", {"outcome": "cancelled"}, format="json")
+        assert res.status_code == status.HTTP_403_FORBIDDEN
+        assert receptionist_client.delete(f"/api/v1/ai/call-logs/{log.id}/").status_code == status.HTTP_403_FORBIDDEN
+
+
 class TestRock8Webhook:
     def test_missing_token(self, api_client, clinic):
         res = api_client.post(f"/api/v1/ai/webhooks/rock8/{clinic.id}/")

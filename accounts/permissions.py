@@ -59,6 +59,10 @@ class IsAdminOrReceptionist(HasAnyRole):
     allowed_roles = (User.Role.CLINIC_ADMIN, User.Role.RECEPTIONIST)
 
 
+class IsAdminDoctorOrReceptionist(HasAnyRole):
+    allowed_roles = (User.Role.CLINIC_ADMIN, User.Role.DOCTOR, User.Role.RECEPTIONIST)
+
+
 class IsDoctorOnly(HasAnyRole):
     allowed_roles = (User.Role.DOCTOR,)
 

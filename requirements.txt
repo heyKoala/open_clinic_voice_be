@@ -48,3 +48,8 @@ tzdata==2026.3
 tzlocal==5.4.4
 vine==5.1.0
 wcwidth==0.8.2
+cryptography>=42
+# Knowledge base (ai_agent.knowledge): text from PDF, Word and web pages
+pypdf>=5
+docx2txt>=0.9
+beautifulsoup4>=4.12

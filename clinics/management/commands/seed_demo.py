@@ -412,8 +412,22 @@ class Command(BaseCommand):
                         summary = f"Patient {'booked' if 'booked' in outcome else 'cancelled' if 'cancel' in outcome else 'inquired about'} an appointment. Duration was {duration} seconds. Handled successfully by ManageOPD AI."
                         if outcome == "unanswered":
                             summary = "Call was unanswered or disconnected by the patient."
-                            
+                        # A booking or cancellation call is about one of the patient's appointments (its doctor
+                        # is what the Reports doctor filter goes by).
+                        handled = None
+                        if patient and ("booked" in outcome or "cancel" in outcome):
+                            handled = Appointment.objects.filter(patient=patient, clinic=clinic).order_by("?").first()
+
+                        # How the caller felt, roughly following the outcome; unanswered calls aren't rated.
+                        sentiment = "" if outcome == "unanswered" else random.choices(
+                            ["positive", "neutral", "negative"],
+                            weights=[0.75, 0.2, 0.05] if "booked" in outcome
+                            else [0.15, 0.5, 0.35] if "cancel" in outcome else [0.4, 0.5, 0.1],
+                        )[0]
+
                         CallLog.objects.create(
+                            sentiment=sentiment,
+                            appointment=handled,
                             clinic=clinic,
                             patient=patient,
                             direction=direction,

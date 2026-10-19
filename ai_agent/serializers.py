@@ -41,8 +41,12 @@ class AgentConfigurationSerializer(serializers.ModelSerializer):
 
 
 class CallLogSerializer(serializers.ModelSerializer):
+    clinic_name = serializers.CharField(source='clinic.name', read_only=True)
     patient_name = serializers.CharField(source="patient.full_name", read_only=True)
     recording_url = serializers.SerializerMethodField()
+    # The doctor of the appointment booked or cancelled in the call, if any.
+    doctor = serializers.IntegerField(source="appointment.doctor_id", read_only=True, default=None)
+    doctor_name = serializers.CharField(source="appointment.doctor.full_name", read_only=True, default=None)
 
     class Meta:
         model = CallLog
@@ -50,6 +54,7 @@ class CallLogSerializer(serializers.ModelSerializer):
             "id",
             "patient",
             "patient_name",
+            "phone",
             "direction",
             "agent_name",
             "language",
@@ -59,10 +64,14 @@ class CallLogSerializer(serializers.ModelSerializer):
             "transcript",
             "recording_url",
             "summary",
+            "sentiment",
+            "is_test",
+            "appointment",
+            "doctor",
+            "doctor_name",
             "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+            "updated_at", "clinic_name"]
+        read_only_fields = ["id", "phone", "sentiment", "is_test", "appointment", "created_at", "updated_at"]
 
     def get_recording_url(self, obj):
         # Prefer our stored copy: the provider's signed links expire about an hour after the call.

@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django.contrib.sites",
+    "django.contrib.postgres",  # full-text search for the knowledge base
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "channels",
@@ -298,6 +299,23 @@ VOICE_AGENT_ESCALATION_POLICY = os.getenv("VOICE_AGENT_ESCALATION_POLICY", "cons
 # Rock8 Configuration
 ROCK8_API_KEY = os.getenv("ROCK8_API_KEY", "")
 ROCK8_WEBHOOK_SECRET = os.getenv("ROCK8_WEBHOOK_SECRET", "")
+# Outbound calls (reminder and feedback calls): the voice worker places them through this SIP trunk.
+VOICE_WORKER_URL = os.getenv("VOICE_WORKER_URL", "https://worker.heykoala.ai")
+ROCK8_SIP_TRUNK_ID = os.getenv("ROCK8_SIP_TRUNK_ID", "")
+# The hospital number's inbound registration at the worker (from POST /inbound/configure), so that the
+# number's audio settings (noise cancellation, recording notice) can be updated from the app.
+ROCK8_INBOUND_TRUNK_ID = os.getenv("ROCK8_INBOUND_TRUNK_ID", "")
+ROCK8_INBOUND_RULE_ID = os.getenv("ROCK8_INBOUND_RULE_ID", "")
+# This backend's public address (e.g. a tunnel), which the voice worker calls back for the call's script.
+# Calls placed from the app use the address the request came in on; scheduled calls need this.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
+
+# Caller sentiment for calls whose provider sends no analysis (the clinic number, the Test call): an
+# OpenAI-compatible chat model rates the transcript. Off while SENTIMENT_API_KEY is empty. Point
+# SENTIMENT_API_BASE at another OpenAI-compatible endpoint (e.g. Gemini's) to use that provider.
+SENTIMENT_API_KEY = os.getenv("SENTIMENT_API_KEY", "")
+SENTIMENT_API_BASE = os.getenv("SENTIMENT_API_BASE", "https://api.openai.com/v1")
+SENTIMENT_MODEL = os.getenv("SENTIMENT_MODEL", "gpt-4o-mini")
 
 # Plivo telephony: buying clinic phone numbers and routing them to the voice agent's SIP app.
 PLIVO_AUTH_ID = os.getenv("PLIVO_AUTH_ID", "")

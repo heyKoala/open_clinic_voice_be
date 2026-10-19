@@ -7,19 +7,21 @@ class AppointmentSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source='patient.full_name', read_only=True)
     patient_phone = serializers.CharField(source='patient.phone', read_only=True)
     patient_email = serializers.CharField(source='patient.email', read_only=True)
-    doctor_name = serializers.CharField(source='doctor.user.full_name', read_only=True)
+    # The doctor record's own name: doctors set up without a login have no user account.
+    doctor_name = serializers.CharField(source='doctor.full_name', read_only=True)
+    clinic_name = serializers.CharField(source='clinic.name', read_only=True)
     doctor_notes = serializers.CharField(source='queue_token.notes', read_only=True)
 
     class Meta:
         model = Appointment
-        fields = ["id","patient","patient_name","patient_phone","patient_email","doctor","doctor_name","doctor_notes","starts_at","ends_at","reason","status","priority","source","created_at","updated_at"]
-        read_only_fields = ["id","created_at","updated_at"]
+        fields = ["id","patient","patient_name","patient_phone","patient_email","doctor","doctor_name","doctor_notes","clinic","clinic_name","starts_at","ends_at","reason","status","priority","source","created_at","updated_at"]
+        read_only_fields = ["id","clinic","created_at","updated_at"]
     def validate(self, attrs):
         if attrs.get("ends_at") and attrs.get("starts_at") and attrs["ends_at"] <= attrs["starts_at"]: raise serializers.ValidationError({"ends_at":"Must be after starts_at."})
-        clinic_id = self.context["request"].user.clinic_id
+        from clinics.context import in_scope
         for field in ("patient", "doctor"):
             value = attrs.get(field) or getattr(self.instance, field, None)
-            if value and value.clinic_id != clinic_id:
+            if value and not in_scope(self.context["request"], value.clinic_id):
                 raise serializers.ValidationError({field: "Must belong to your clinic."})
 
         doctor = attrs.get("doctor") or getattr(self.instance, "doctor", None)

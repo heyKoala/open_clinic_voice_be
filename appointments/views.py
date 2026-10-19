@@ -30,13 +30,21 @@ def _parse_walkin_params(data):
 
 class AppointmentFilter(django_filters.FilterSet):
     status = django_filters.CharFilter(field_name="status", lookup_expr="exact")
-    source = django_filters.CharFilter(field_name="source", lookup_expr="exact")
+    source = django_filters.CharFilter(method="filter_source")
     starts_at_after = django_filters.DateTimeFilter(field_name="starts_at", lookup_expr="gte")
     starts_at_before = django_filters.DateTimeFilter(field_name="starts_at", lookup_expr="lte")
     ends_at_after = django_filters.DateTimeFilter(field_name="ends_at", lookup_expr="gte")
     ends_at_before = django_filters.DateTimeFilter(field_name="ends_at", lookup_expr="lte")
     patient = django_filters.NumberFilter(field_name="patient_id")
     doctor = django_filters.NumberFilter(field_name="doctor_id")
+
+    # Staff bookings are saved as "front_desk" by the app and "manual" by older data: ?source=front_desk covers both.
+    FRONT_DESK_SOURCES = ("front_desk", "manual")
+
+    def filter_source(self, queryset, name, value):
+        if value in self.FRONT_DESK_SOURCES:
+            return queryset.filter(source__in=self.FRONT_DESK_SOURCES)
+        return queryset.filter(source=value)
 
     class Meta:
         model = Appointment
@@ -57,6 +65,20 @@ class AppointmentViewSet(ClinicScopedModelViewSet):
     ordering_fields = ["starts_at", "status", "created_at"]
     pagination_class = StandardResultsSetPagination
     filter_backends = [DjangoFilterBackend, rest_filters.SearchFilter, rest_filters.OrderingFilter]
+
+    def perform_create(self, serializer):
+        """A booking belongs to the centre its doctor works at. A patient known at another centre gets a
+        record at that centre too (patients are kept per centre), matched by phone."""
+        from common.audit import log_data_change
+        from patients.models import Patient
+        doctor = serializer.validated_data["doctor"]
+        patient = serializer.validated_data["patient"]
+        if patient.clinic_id != doctor.clinic_id:
+            patient, _ = Patient.objects.get_or_create(clinic=doctor.clinic, phone=patient.phone, defaults={
+                "full_name": patient.full_name, "gender": patient.gender, "date_of_birth": patient.date_of_birth, "email": patient.email})
+        instance = serializer.save(clinic=doctor.clinic, patient=patient)
+        log_data_change(instance, "create", request=self.request)
+        return instance
 
     def get_queryset(self):
         queryset = super().get_queryset()

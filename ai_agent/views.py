@@ -8,13 +8,15 @@ from rest_framework import filters as rest_filters
 from rest_framework.pagination import PageNumberPagination
 
 from ai_agent import providers
+from ai_agent import inbound
 from ai_agent.agent_settings import (
-    InvalidSettings, effective_settings, provider_config, render, save_settings, settings_payload,
+    InvalidSettings, call_flags, effective_settings, provider_config, render, save_settings, session_config, settings_payload,
 )
 from ai_agent.models import AgentConfiguration, CallLog, VoiceAgentSettings
 from ai_agent.serializers import AgentConfigurationSerializer, CallLogSerializer
 from common.api import ClinicScopedModelViewSet
-from accounts.permissions import IsClinicAdmin, IsAdminOrDoctor
+from accounts.permissions import IsClinicAdmin, IsAdminOrDoctor, IsAdminDoctorOrReceptionist
+from rest_framework.permissions import SAFE_METHODS
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -133,7 +135,7 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
         },
         {
             "name": "list_doctors",
-            "description": "Get a list of all doctors, with the centre each one works at.",
+            "description": "Get a list of all doctors, with the centre each one works at, the days of the week they consult and their hours. Use it to tell callers when a doctor is available before fetching slots.",
             "method": "GET",
             "url": tool_url("doctors"),
             "parameters": []
@@ -149,6 +151,12 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
             ]
         }
     ]
+    # The hospital's own documents (AI Agent → Knowledge), when it has any.
+    from ai_agent import knowledge
+    knowledge_tool = knowledge.tool_spec(root, tool_url("knowledge"))
+    if knowledge_tool:
+        tools.append(knowledge_tool)
+        system_prompt += knowledge.prompt_note(root)
     if getattr(settings, "WHATSAPP_CONFIRMATION_WEBHOOK_URL", ""):
         tools.append({
             "name": "send_whatsapp_confirmation",
@@ -171,14 +179,7 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
         "first_message": render(agent["first_message"], root),
         "model_type": agent["model_type"],
         "tools": tools,
-        "thinking_sound": True,
-        "max_silence_seconds": 120,
-        "background_sound": False,
-        "vad_config": {
-            "min_silence_duration": 0.45,
-            "activation_threshold": 0.4,
-            "min_speech_duration": 0.05
-        }
+        **session_config(agent),
     }
     if agent["model_type"] == VoiceAgentSettings.ModelType.REALTIME:
         config["realtime_config"] = provider_config(agent["realtime"])
@@ -188,9 +189,10 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
     return config
 
 
-def _handle_webhook(clinic, request):
+def _handle_webhook(clinic, request, is_test=False):
     # Call lifecycle events (call ended, analysis completed, ...) are recorded as CallLogs;
     # any other request is the call-start request asking for the agent configuration.
+    # ``is_test``: the call came through the Test call webhook (…/test/), so its log is marked as a test.
     data = request.data if isinstance(request.data, dict) else {}
     logger.info("Voice webhook for clinic %s: keys=%s room=%s", clinic.id, sorted(data), data.get("room_name"))
     if is_call_event(request.data):
@@ -204,7 +206,7 @@ def _handle_webhook(clinic, request):
     caller = caller_number(data)
     try:
         # Inbound numbers never send "call ended" events, so the log is started here.
-        start_call_log(clinic, data)
+        start_call_log(clinic, data, is_test=is_test)
     except Exception:
         logger.exception("Could not start the call log for clinic %s", clinic.id)  # never block the call
     return Response(build_agent_config(clinic, request, caller))
@@ -221,7 +223,7 @@ class Rock8WebhookView(APIView):
 
     def post(self, request, *args, **kwargs):
         clinic = get_object_or_404(Clinic, id=kwargs.get('clinic_id'))
-        return _handle_webhook(clinic, request)
+        return _handle_webhook(clinic, request, is_test=bool(kwargs.get("test")))
 
 
 class Rock8NumberWebhookView(APIView):
@@ -277,6 +279,27 @@ class CallLogFilter(django_filters.FilterSet):
     occurred_at_after = django_filters.DateTimeFilter(field_name="occurred_at", lookup_expr="gte")
     occurred_at_before = django_filters.DateTimeFilter(field_name="occurred_at", lookup_expr="lte")
     patient = django_filters.NumberFilter(field_name="patient_id")
+    # Outcomes are free text from the agent ("Appointment booked"), so match a keyword: ?outcome=booked.
+    outcome = django_filters.CharFilter(field_name="outcome", lookup_expr="icontains")
+    # ?is_test=false: patients' calls only; ?is_test=true: the app's test calls only.
+    is_test = django_filters.BooleanFilter(field_name="is_test")
+    # Calls that booked or cancelled an appointment with this doctor.
+    doctor = django_filters.NumberFilter(field_name="appointment__doctor_id")
+    # ?sentiment=positive|neutral|negative; ?sentiment=none for calls not rated yet.
+    sentiment = django_filters.CharFilter(method="filter_sentiment")
+    # ?phone=+91 96322 14132: every call from that number, whichever centre's patient record it was filed
+    # under (a patient can have a record per centre), including calls not matched to a patient at all.
+    phone = django_filters.CharFilter(method="filter_phone")
+
+    def filter_phone(self, queryset, name, value):
+        from django.db.models import Q
+        digits = "".join(ch for ch in str(value or "") if ch.isdigit())[-10:]
+        if len(digits) < 7:
+            return queryset.none()
+        return queryset.filter(Q(phone__contains=digits) | Q(patient__phone__contains=digits) | Q(summary__contains=digits))
+
+    def filter_sentiment(self, queryset, name, value):
+        return queryset.filter(sentiment="" if value == "none" else value)
 
     class Meta:
         model = CallLog
@@ -284,14 +307,24 @@ class CallLogFilter(django_filters.FilterSet):
 
 
 class CallLogViewSet(ClinicScopedModelViewSet):
-    queryset = CallLog.objects.select_related("patient")
+    queryset = CallLog.objects.select_related("patient", "appointment__doctor")
     serializer_class = CallLogSerializer
     permission_classes = [IsAdminOrDoctor]
     filterset_class = CallLogFilter
+
+    def get_queryset(self):
+        # Calls come in on the hospital's shared line: every centre's staff see all of them.
+        return self.queryset.filter(clinic__in=self.request.clinic.root.group_clinics())
     search_fields = ["agent_name", "outcome", "transcript"]
     ordering_fields = ["occurred_at", "duration_seconds", "created_at"]
     pagination_class = StandardResultsSetPagination
     filter_backends = [DjangoFilterBackend, rest_filters.SearchFilter, rest_filters.OrderingFilter]
+
+    def get_permissions(self):
+        # Receptionists read call logs (and play recordings) at the front desk; only admins and doctors change them.
+        if self.request.method in SAFE_METHODS:
+            return [IsAdminDoctorOrReceptionist()]
+        return super().get_permissions()
 
     @action(detail=True, methods=["get"])
     def recording(self, request, pk=None):
@@ -318,7 +351,9 @@ class Rock8StartWebCallView(APIView):
         participant_name = request.query_params.get("participant_name", "Test User")
         participant_identity = request.query_params.get("participant_identity", "test_user_123")
         
-        base_url = getattr(settings, 'BACKEND_URL', f"{request.scheme}://{request.get_host()}")
+        # The voice worker must reach this backend from the internet: the public address (tunnel or
+        # deployment) first, then whatever the request came in on.
+        base_url = getattr(settings, 'PUBLIC_BASE_URL', '') or getattr(settings, 'BACKEND_URL', '') or f"{request.scheme}://{request.get_host()}"
         
         # If frontend sends a base URL from ngrok/localtunnel, use it
         override_base_url = request.query_params.get("webhook_url", None)
@@ -333,16 +368,18 @@ class Rock8StartWebCallView(APIView):
             webhook_url = f"{base_url}/api/v1/ai/webhooks/rock8/{clinic.id}/"
             
         if "token=" not in webhook_url:
-            # Token in the path (the provider may not pass query strings through).
+            # Token in the path (the provider may not pass query strings through). The trailing
+            # "test" marks the call log as a test call (see the rock8-webhook-test URL).
             if webhook_url.endswith(f"/rock8/{clinic.id}/"):
-                webhook_url = webhook_url[: -len(f"{clinic.id}/")] + rock8_path(clinic.id)
+                webhook_url = webhook_url[: -len(f"{clinic.id}/")] + rock8_path(clinic.id, "test")
             else:
                 webhook_url = with_rock8_token(webhook_url, clinic.id)
         
         payload = {
             "participant_name": participant_name,
             "participant_identity": participant_identity,
-            "webhook_url": webhook_url
+            "webhook_url": webhook_url,
+            **call_flags(clinic.root, for_web_call=True),
         }
         
         headers = {
@@ -388,21 +425,31 @@ class VoiceAgentSettingsView(APIView):
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
+        before = call_flags(root)
         try:
             save_settings(root, request.data if isinstance(request.data, dict) else {})
         except InvalidSettings as exc:
             return Response(exc.errors, status=status.HTTP_400_BAD_REQUEST)
         except providers.ProviderError as exc:
             return _catalog_error(exc)
-        return Response(settings_payload(root))
+        payload = settings_payload(root)
+        after = call_flags(root)
+        if inbound.is_configured() or after != before:
+            payload["inbound_applied"] = inbound.apply_call_flags(after)
+        return Response(payload)
 
     def delete(self, request):
         """Back to the built-in defaults."""
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
+        before = call_flags(root)
         VoiceAgentSettings.objects.filter(clinic=root).delete()
-        return Response(settings_payload(root))
+        payload = settings_payload(root)
+        after = call_flags(root)
+        if after != before:
+            payload["inbound_applied"] = inbound.apply_call_flags(after)
+        return Response(payload)
 
 
 class VoiceAgentProvidersView(APIView):

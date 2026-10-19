@@ -4,9 +4,10 @@ from doctors.models import Doctor
 
 
 class DoctorSerializer(serializers.ModelSerializer):
+    clinic_name = serializers.CharField(source='clinic.name', read_only=True)
     class Meta:
         model = Doctor
-        fields = ["id","user","full_name","degree","specialty","consultation_minutes","max_patients_per_day","available_from","available_to","lunch_from","lunch_to","working_days","receptionists","is_active","created_at","updated_at"]
+        fields = ["id","user","full_name","degree","specialty","consultation_minutes","max_patients_per_day","available_from","available_to","lunch_from","lunch_to","working_days","receptionists","is_active","created_at","updated_at", "clinic_name"]
         # The front desk mapping is admin-only: it is written through the Access page (accounts.UserDetailView).
         read_only_fields = ["id","receptionists","created_at","updated_at"]
 
