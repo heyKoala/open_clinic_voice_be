@@ -4,6 +4,8 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from config.aws_secrets import get_secret, load_aws_secrets
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -24,14 +26,18 @@ def load_local_env() -> None:
 
 
 load_local_env()
+# Deployed environments keep their configuration in AWS Secrets Manager (USE_AWS_SECRETS=True in the
+# .env, together with AWS_SECRETS_NAME and AWS_REGION_NAME). get_secret() reads the AWS payload first and
+# falls back to the environment / .env, so a laptop with USE_AWS_SECRETS unset behaves as before.
+load_aws_secrets()
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-secret-key")
-DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = ["*"] if DEBUG else [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
-ENVIRONMENT = os.getenv("DJANGO_ENV", "development")
+SECRET_KEY = get_secret("DJANGO_SECRET_KEY", "dev-only-secret-key")
+DEBUG = get_secret("DJANGO_DEBUG", True, cast=bool)
+ALLOWED_HOSTS = ["*"] if DEBUG else get_secret("DJANGO_ALLOWED_HOSTS", ["localhost", "127.0.0.1"], cast=list)
+ENVIRONMENT = get_secret("DJANGO_ENV", "development")
 
 if not DEBUG:
-    required = {"DJANGO_SECRET_KEY": SECRET_KEY, "DJANGO_ALLOWED_HOSTS": os.getenv("DJANGO_ALLOWED_HOSTS", "")}
+    required = {"DJANGO_SECRET_KEY": SECRET_KEY, "DJANGO_ALLOWED_HOSTS": get_secret("DJANGO_ALLOWED_HOSTS", "")}
     missing = [name for name, value in required.items() if not value or value == "dev-only-secret-key"]
     if missing:
         raise RuntimeError(f"Production configuration missing: {', '.join(missing)}")
@@ -112,15 +118,15 @@ ASGI_APPLICATION = "config.asgi.application"
 
 DATABASES = {
     "default": {
-        "ENGINE": os.getenv("DB_ENGINE", "django.db.backends.postgresql"),
-        "NAME": os.getenv("DB_NAME", "manageopd"),
-        "USER": os.getenv("DB_USER", "postgres"),
-        "PASSWORD": os.getenv("DB_PASSWORD", "postgres"),
-        "HOST": os.getenv("DB_HOST", "127.0.0.1"),
-        "PORT": os.getenv("DB_PORT", "5432"),
-        "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
+        "ENGINE": get_secret("DB_ENGINE", "django.db.backends.postgresql"),
+        "NAME": get_secret("DB_NAME", "manageopd"),
+        "USER": get_secret("DB_USER", "postgres"),
+        "PASSWORD": get_secret("DB_PASSWORD", "postgres"),
+        "HOST": get_secret("DB_HOST", "127.0.0.1"),
+        "PORT": get_secret("DB_PORT", "5432"),
+        "CONN_MAX_AGE": get_secret("DB_CONN_MAX_AGE", 60, cast=int),
         "OPTIONS": {
-            "sslmode": os.getenv("DB_SSLMODE", "prefer"),
+            "sslmode": get_secret("DB_SSLMODE", "prefer"),
         },
     }
 }
@@ -162,8 +168,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = "static/"
-MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
-MEDIA_ROOT = BASE_DIR / os.getenv("MEDIA_ROOT", "media")
+MEDIA_URL = get_secret("MEDIA_URL", "/media/")
+MEDIA_ROOT = BASE_DIR / get_secret("MEDIA_ROOT", "media")
 
 
 # Default primary key field type
@@ -174,14 +180,10 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 SITE_ID = 1
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = get_secret("FRONTEND_URL", "http://localhost:5173")
 
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()
-]
-CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()
-]
+CSRF_TRUSTED_ORIGINS = get_secret("CSRF_TRUSTED_ORIGINS", ["http://localhost:5173", "http://127.0.0.1:5173"], cast=list)
+CORS_ALLOWED_ORIGINS = get_secret("CORS_ALLOWED_ORIGINS", ["http://localhost:5173", "http://127.0.0.1:5173"], cast=list)
 if DEBUG:
     # Vite picks the next free port (5174, 5175, ...) when 5173 is taken; allow any local dev port.
     CORS_ALLOWED_ORIGIN_REGEXES = [r"^http://(localhost|127\.0\.0\.1):\d+$"]
@@ -242,12 +244,12 @@ AUTH_COOKIE_SECURE = not DEBUG
 AUTH_COOKIE_HTTP_ONLY = True
 AUTH_COOKIE_SAMESITE = "Lax"
 
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1")
+CELERY_BROKER_URL = get_secret("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
+CELERY_RESULT_BACKEND = get_secret("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1")
 
 # The in-memory layer only works within one process, so events sent from Celery workers
 # never reach browsers. Set CHANNEL_LAYER=redis in development to get them.
-if DEBUG and os.getenv("CHANNEL_LAYER", "memory") != "redis":
+if DEBUG and get_secret("CHANNEL_LAYER", "memory") != "redis":
     CHANNEL_LAYERS = {
         "default": {
             "BACKEND": "channels.layers.InMemoryChannelLayer",
@@ -260,14 +262,14 @@ else:
             "CONFIG": {
                 # redis-py 8 defaults socket_timeout to 5s, equal to channels_redis' 5s blocking
                 # BZPOPMIN, so idle websockets crash with "Timeout reading" (close code 1011).
-                "hosts": [{"address": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/2"), "socket_timeout": 15}],
+                "hosts": [{"address": get_secret("REDIS_URL", "redis://127.0.0.1:6379/2"), "socket_timeout": 15}],
             },
         },
     }
 
-CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "0") == "1"
-CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "300"))
-CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "240"))
+CELERY_TASK_ALWAYS_EAGER = get_secret("CELERY_TASK_ALWAYS_EAGER", False, cast=bool)
+CELERY_TASK_TIME_LIMIT = get_secret("CELERY_TASK_TIME_LIMIT", 300, cast=int)
+CELERY_TASK_SOFT_TIME_LIMIT = get_secret("CELERY_TASK_SOFT_TIME_LIMIT", 240, cast=int)
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 # Tasks are queued from web requests: fail fast when Redis is down instead of hanging the request.
@@ -278,62 +280,62 @@ CELERY_REDIS_SOCKET_CONNECT_TIMEOUT = 3
 CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
     "retry_policy": {"max_retries": 2, "interval_start": 0, "interval_step": 0.5, "interval_max": 1},
 }
-CELERY_RESULT_EXPIRES = int(os.getenv("CELERY_RESULT_EXPIRES", str(24 * 60 * 60)))
+CELERY_RESULT_EXPIRES = get_secret("CELERY_RESULT_EXPIRES", 24 * 60 * 60, cast=int)
 CELERY_BEAT_SCHEDULE_FILENAME = str(BASE_DIR / ".celery" / "celerybeat-schedule")
 
-EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
-EMAIL_HOST = os.getenv("EMAIL_HOST", "")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
-EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "1") == "1"
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@manageopd.local")
+EMAIL_BACKEND = get_secret("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST = get_secret("EMAIL_HOST", "")
+EMAIL_PORT = get_secret("EMAIL_PORT", 587, cast=int)
+EMAIL_HOST_USER = get_secret("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = get_secret("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = get_secret("EMAIL_USE_TLS", True, cast=bool)
+DEFAULT_FROM_EMAIL = get_secret("DEFAULT_FROM_EMAIL", "noreply@manageopd.local")
 
 # Feature flags
 # NOTE: ENABLE_SRS_V03_AI_FIRST is reserved for a future AI-first pre-screening intake flow
 # (SRS v0.3). Setting it to "1" currently has NO effect — no code path branches on this value.
 # Do not enable it expecting changed behaviour. Remove this comment when the flag is wired up.
-ENABLE_SRS_V03_AI_FIRST = os.getenv("ENABLE_SRS_V03_AI_FIRST", "0") == "1"
-VOICE_AGENT_ESCALATION_POLICY = os.getenv("VOICE_AGENT_ESCALATION_POLICY", "conservative")
+ENABLE_SRS_V03_AI_FIRST = get_secret("ENABLE_SRS_V03_AI_FIRST", False, cast=bool)
+VOICE_AGENT_ESCALATION_POLICY = get_secret("VOICE_AGENT_ESCALATION_POLICY", "conservative")
 
 # Rock8 Configuration
-ROCK8_API_KEY = os.getenv("ROCK8_API_KEY", "")
-ROCK8_WEBHOOK_SECRET = os.getenv("ROCK8_WEBHOOK_SECRET", "")
+ROCK8_API_KEY = get_secret("ROCK8_API_KEY", "")
+ROCK8_WEBHOOK_SECRET = get_secret("ROCK8_WEBHOOK_SECRET", "")
 # Outbound calls (reminder and feedback calls): the voice worker places them through this SIP trunk.
-VOICE_WORKER_URL = os.getenv("VOICE_WORKER_URL", "https://worker.heykoala.ai")
-ROCK8_SIP_TRUNK_ID = os.getenv("ROCK8_SIP_TRUNK_ID", "")
+VOICE_WORKER_URL = get_secret("VOICE_WORKER_URL", "https://worker.heykoala.ai")
+ROCK8_SIP_TRUNK_ID = get_secret("ROCK8_SIP_TRUNK_ID", "")
 # The hospital number's inbound registration at the worker (from POST /inbound/configure), so that the
 # number's audio settings (noise cancellation, recording notice) can be updated from the app.
-ROCK8_INBOUND_TRUNK_ID = os.getenv("ROCK8_INBOUND_TRUNK_ID", "")
-ROCK8_INBOUND_RULE_ID = os.getenv("ROCK8_INBOUND_RULE_ID", "")
+ROCK8_INBOUND_TRUNK_ID = get_secret("ROCK8_INBOUND_TRUNK_ID", "")
+ROCK8_INBOUND_RULE_ID = get_secret("ROCK8_INBOUND_RULE_ID", "")
 # This backend's public address (e.g. a tunnel), which the voice worker calls back for the call's script.
 # Calls placed from the app use the address the request came in on; scheduled calls need this.
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
+PUBLIC_BASE_URL = get_secret("PUBLIC_BASE_URL", "")
 
 # Caller sentiment for calls whose provider sends no analysis (the clinic number, the Test call): an
 # OpenAI-compatible chat model rates the transcript. Off while SENTIMENT_API_KEY is empty. Point
 # SENTIMENT_API_BASE at another OpenAI-compatible endpoint (e.g. Gemini's) to use that provider.
-SENTIMENT_API_KEY = os.getenv("SENTIMENT_API_KEY", "")
-SENTIMENT_API_BASE = os.getenv("SENTIMENT_API_BASE", "https://api.openai.com/v1")
-SENTIMENT_MODEL = os.getenv("SENTIMENT_MODEL", "gpt-4o-mini")
+SENTIMENT_API_KEY = get_secret("SENTIMENT_API_KEY", "")
+SENTIMENT_API_BASE = get_secret("SENTIMENT_API_BASE", "https://api.openai.com/v1")
+SENTIMENT_MODEL = get_secret("SENTIMENT_MODEL", "gpt-4o-mini")
 
 # Plivo telephony: buying clinic phone numbers and routing them to the voice agent's SIP app.
-PLIVO_AUTH_ID = os.getenv("PLIVO_AUTH_ID", "")
-PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN", "")
-PLIVO_APP_ID = os.getenv("PLIVO_APP_ID", "")
+PLIVO_AUTH_ID = get_secret("PLIVO_AUTH_ID", "")
+PLIVO_AUTH_TOKEN = get_secret("PLIVO_AUTH_TOKEN", "")
+PLIVO_APP_ID = get_secret("PLIVO_APP_ID", "")
 
 # WhatsApp Cloud API Configuration (messages are mocked when token/phone id are unset)
-WHATSAPP_API_TOKEN = os.getenv("WHATSAPP_API_TOKEN", "")
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
-WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
+WHATSAPP_API_TOKEN = get_secret("WHATSAPP_API_TOKEN", "")
+WHATSAPP_PHONE_NUMBER_ID = get_secret("WHATSAPP_PHONE_NUMBER_ID", "")
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = get_secret("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
+WHATSAPP_APP_SECRET = get_secret("WHATSAPP_APP_SECRET", "")
 # Webhook that sends a patient their appointment confirmation on WhatsApp (the voice agent's
 # send_whatsapp_confirmation tool). The tool is not offered to the agent when this is unset.
-WHATSAPP_CONFIRMATION_WEBHOOK_URL = os.getenv("WHATSAPP_CONFIRMATION_WEBHOOK_URL", "")
+WHATSAPP_CONFIRMATION_WEBHOOK_URL = get_secret("WHATSAPP_CONFIRMATION_WEBHOOK_URL", "")
 
 # Razorpay Configuration
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_placeholder")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "rzp_secret_placeholder")
+RAZORPAY_KEY_ID = get_secret("RAZORPAY_KEY_ID", "rzp_test_placeholder")
+RAZORPAY_KEY_SECRET = get_secret("RAZORPAY_KEY_SECRET", "rzp_secret_placeholder")
 
 LOGGING = {
     "version": 1,
@@ -347,5 +349,5 @@ LOGGING = {
             "propagate": False,
         },
     },
-    "root": {"handlers": ["console"], "level": os.getenv("LOG_LEVEL", "INFO")},
+    "root": {"handlers": ["console"], "level": get_secret("LOG_LEVEL", "INFO")},
 }
