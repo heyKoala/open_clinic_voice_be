@@ -434,7 +434,7 @@ class VoiceAgentSettingsView(APIView):
             return _catalog_error(exc)
         payload = settings_payload(root)
         after = call_flags(root)
-        if inbound.is_configured() or after != before:
+        if after != before:
             payload["inbound_applied"] = inbound.apply_call_flags(after)
         return Response(payload)
 

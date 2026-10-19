@@ -178,10 +178,10 @@ def test_saved_call_audio_changes_the_call_config_and_is_pushed_to_the_number(ad
     assert (config["max_silence_seconds"], config["thinking_sound"]) == (45, False)
     assert config["vad_config"]["min_silence_duration"] == 0.8
 
-    # Every save re-applies the flags to the number (cheap, and keeps the number from drifting from the page).
-    with mock.patch("ai_agent.inbound.requests.put", return_value=_inbound_ok()) as put:
+    # Saving without changing the inbound flags (model, voice, prompt, silence limit) leaves the number alone.
+    with mock.patch("ai_agent.inbound.requests.put") as put:
         res = admin_client.put(URL, data=json.dumps({**body, "max_silence_seconds": 50}), content_type="application/json")
-    assert res.status_code == 200 and res.data["inbound_applied"]["ok"] is True and put.called
+    assert res.status_code == 200 and "inbound_applied" not in res.data and not put.called
 
 
 def test_noise_cancellation_off_drops_the_level_and_warns_without_inbound_ids(admin_client, clinic, settings):
@@ -206,3 +206,16 @@ def test_noise_cancellation_off_drops_the_level_and_warns_without_inbound_ids(ad
 def test_invalid_call_audio_is_rejected(admin_client, clinic, change, field):
     res = admin_client.put(URL, data=json.dumps({**STANDARD, **change}), content_type="application/json")
     assert res.status_code == 400 and field in res.data
+
+
+def test_a_save_without_call_audio_fields_keeps_them(admin_client, clinic, settings):
+    """The original front end only sends greeting, prompt and models: the call audio settings must survive."""
+    settings.ROCK8_INBOUND_TRUNK_ID = settings.ROCK8_INBOUND_RULE_ID = ""
+    tuned = {**STANDARD, "noise_cancellation_level": 20, "recording_disclosure": True, "listening": "patient",
+             "max_silence_seconds": 90, "thinking_sound": False}
+    assert admin_client.put(URL, data=json.dumps(tuned), content_type="application/json").status_code == 200
+    res = admin_client.put(URL, data=json.dumps(STANDARD), content_type="application/json")
+    assert res.status_code == 200
+    saved = VoiceAgentSettings.objects.get(clinic=clinic)
+    assert (saved.noise_cancellation_level, saved.recording_disclosure, saved.listening, saved.max_silence_seconds,
+            saved.thinking_sound) == (20, True, "patient", 90, False)

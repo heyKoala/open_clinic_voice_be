@@ -134,8 +134,12 @@ def session_config(current: dict) -> dict:
     }
 
 
-def resolve_call_settings(data: dict) -> dict:
-    """Validate the call audio/listening fields; missing ones keep their defaults. Raises InvalidSettings."""
+def resolve_call_settings(data: dict, current: dict | None = None) -> dict:
+    """Validate the call audio/listening fields. A field left out keeps its ``current`` value (what was saved,
+    else the default), so clients that don't know these fields (the original front end) never reset them.
+    Raises InvalidSettings."""
+    base = {**CALL_DEFAULTS, **(current or {})}
+    data = {**base, **{k: v for k, v in data.items() if k in CALL_DEFAULTS}}
     errors, out = {}, {}
     for name in ("noise_cancellation", "recording_disclosure", "thinking_sound"):
         value = data.get(name, CALL_DEFAULTS[name])
@@ -246,8 +250,10 @@ def save_settings(root, data: dict) -> VoiceAgentSettings:
             stages[kind] = resolve_stage(kind, data.get(kind))
         except InvalidSettings as exc:
             errors.update(exc.errors)
+    saved = VoiceAgentSettings.objects.filter(clinic=root).first()
+    current = {name: getattr(saved, name) for name in CALL_FIELDS} if saved else None
     try:
-        calls = resolve_call_settings(data)
+        calls = resolve_call_settings(data, current)
     except InvalidSettings as exc:
         errors.update(exc.errors)
     if errors:
