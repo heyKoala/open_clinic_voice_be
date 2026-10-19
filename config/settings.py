@@ -205,6 +205,10 @@ SECURE_SSL_REDIRECT = not DEBUG
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+# When the frontend and the API are on different subdomains (clinic.example.com and clinic-api.example.com),
+# the frontend's JavaScript must be able to read the csrftoken cookie to send it back: set this to the shared
+# parent domain, e.g. ".example.com". Leave unset when both are served from one domain.
+CSRF_COOKIE_DOMAIN = get_secret("CSRF_COOKIE_DOMAIN", "") or None
 SECURE_HSTS_SECONDS = 31_536_000 if not DEBUG else 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
 SECURE_HSTS_PRELOAD = not DEBUG

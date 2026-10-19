@@ -242,3 +242,4 @@ def test_uncast_values_are_strings(monkeypatch):
     monkeypatch.setattr(aws_secrets, "_secrets", {"DB_PORT": 5432})
 
     assert get_secret("DB_PORT", "5432") == "5432"
+

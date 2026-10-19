@@ -149,6 +149,7 @@ class LoginView(APIView):
 			httponly=False,
 			secure=settings.AUTH_COOKIE_SECURE,
 			samesite=settings.AUTH_COOKIE_SAMESITE,
+			domain=settings.CSRF_COOKIE_DOMAIN,  # shared with the frontend's subdomain when they differ
 		)
 
 		device_id = request.COOKIES.get("device_id") or str(uuid.uuid4())

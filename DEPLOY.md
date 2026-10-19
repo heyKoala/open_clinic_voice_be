@@ -63,6 +63,8 @@ With this layout: `DJANGO_ALLOWED_HOSTS=desk.example.com`, `FRONTEND_URL`, `CSRF
 If the API must live on its own host, keep it a sibling subdomain (`api.example.com` next to
 `desk.example.com`; login cookies are SameSite=Lax), set `DJANGO_ALLOWED_HOSTS` / `PUBLIC_BASE_URL` to the
 API host, and build the frontend with `VITE_API_BASE_URL=https://api.example.com/api/v1`.
+Also set `CSRF_COOKIE_DOMAIN=.example.com` (the shared parent domain), so the frontend can read the CSRF
+cookie it must send back on every save; without it every POST/PUT/DELETE fails with 403 "CSRF failed".
 
 `PUBLIC_BASE_URL` must be reachable from the internet: the voice provider calls it at the start of every
 phone call (for the agent's configuration) and during the call (booking tools).
