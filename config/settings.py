@@ -199,6 +199,10 @@ if not DEBUG and (not CORS_ALLOWED_ORIGINS or any(not origin.startswith("https:/
     raise RuntimeError("Production CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins.")
 
 SECURE_SSL_REDIRECT = not DEBUG
+# HTTPS ends at the load balancer / nginx, which forwards plain HTTP and says so in X-Forwarded-Proto.
+# Without this Django sees every request as HTTP and SECURE_SSL_REDIRECT redirects forever. The proxy must
+# set this header itself (overwriting any value from the client).
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SECURE_HSTS_SECONDS = 31_536_000 if not DEBUG else 0
@@ -282,6 +286,7 @@ CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
 }
 CELERY_RESULT_EXPIRES = get_secret("CELERY_RESULT_EXPIRES", 24 * 60 * 60, cast=int)
 CELERY_BEAT_SCHEDULE_FILENAME = str(BASE_DIR / ".celery" / "celerybeat-schedule")
+(BASE_DIR / ".celery").mkdir(exist_ok=True)  # beat cannot create it, and fails on a fresh checkout
 
 EMAIL_BACKEND = get_secret("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 EMAIL_HOST = get_secret("EMAIL_HOST", "")
