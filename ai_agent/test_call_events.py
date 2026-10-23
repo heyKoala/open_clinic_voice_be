@@ -668,3 +668,53 @@ class TestReturningCaller:
                 assert caller_name_from_transcript("AI: Hi\nPatient: I'm Srikanth.") == expected
         settings.SENTIMENT_API_KEY = ""
         assert caller_name_from_transcript("AI: Hi\nPatient: I'm Srikanth.") == ""
+
+
+class TestCallLanguage:
+    """Calls start logged as English; the language the caller actually spoke is set after the call."""
+
+    KANNADA = "AI: Welcome.\nPatient: ನಮಸ್ಕಾರ, ನನಗೆ ಡಾಕ್ಟರ್ appointment ಬೇಕು.\nAI: Sure."
+    HINDI = "AI: Welcome.\nPatient: नमस्ते, मुझे कल डॉक्टर से मिलना है।\nAI: Sure."
+    ENGLISH = "AI: Welcome.\nPatient: Hello, I need an appointment tomorrow.\nAI: Sure."
+
+    def test_script_of_the_callers_lines(self):
+        from ai_agent.sentiment import language_from_script
+        assert language_from_script(self.KANNADA) == "kn"
+        assert language_from_script(self.HINDI) == "hi"
+        assert language_from_script(self.ENGLISH) == "en"
+        assert language_from_script("AI: ನಮಸ್ಕಾರ\nPatient: Hello there") == "en"  # the AI's lines don't count
+        assert language_from_script("AI: Hello?") == ""  # the caller said nothing
+
+    def test_model_answer_wins_and_script_is_the_fallback(self, settings):
+        from ai_agent.sentiment import language_from_transcript
+        settings.SENTIMENT_API_KEY = "k"
+        with mock.patch("ai_agent.sentiment._chat", return_value='{"language": "mr"}'):
+            assert language_from_transcript(self.HINDI) == "mr"  # Marathi shares Hindi's script
+        with mock.patch("ai_agent.sentiment._chat", return_value='{"language": "klingon"}'):
+            assert language_from_transcript(self.KANNADA) == "kn"
+        settings.SENTIMENT_API_KEY = ""
+        assert language_from_transcript(self.KANNADA) == "kn"
+
+    def test_language_is_set_after_the_call(self, clinic):
+        from django.utils import timezone
+        from ai_agent.call_events import fetch_media
+        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="in_progress",
+                                     external_call_id="lang-1", language="en")
+        response = mock.MagicMock()
+        response.json.side_effect = ValueError
+        response.text = self.KANNADA
+        with mock.patch("ai_agent.call_events.requests.get", return_value=response), \
+             mock.patch("ai_agent.call_events.summarize_transcript", return_value=""), \
+             mock.patch("ai_agent.call_events.rate_transcript", return_value=""), \
+             mock.patch("ai_agent.call_events.caller_name_from_transcript", return_value=""), \
+             mock.patch("ai_agent.call_events.classify_outcome", return_value=None):
+            fetch_media(log.id, "https://cdn.example/transcript.txt", None)
+        assert CallLog.objects.get(id=log.id).language == "kn"
+
+    def test_backfill_command(self, clinic):
+        from django.core.management import call_command
+        from django.utils import timezone
+        kn = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), language="en", transcript=self.KANNADA)
+        en = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), language="en", transcript=self.ENGLISH)
+        call_command("detect_call_languages", stdout=mock.MagicMock())
+        assert (CallLog.objects.get(id=kn.id).language, CallLog.objects.get(id=en.id).language) == ("kn", "en")

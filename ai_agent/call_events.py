@@ -41,7 +41,8 @@ from django.utils.dateparse import parse_datetime
 
 from ai_agent.models import CallLog
 from ai_agent.sentiment import (
-    caller_name_from_transcript, classify_transcript, normalize_sentiment, rate_transcript, summarize_transcript,
+    caller_name_from_transcript, classify_transcript, language_from_transcript, normalize_sentiment, rate_transcript,
+    summarize_transcript,
 )
 from patients.models import Patient
 
@@ -427,6 +428,11 @@ def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str
             summary = summarize_transcript(transcript)
             if summary:
                 updates["summary"] = summary
+        # The language the caller actually spoke: the log starts with the agent's default ("en").
+        if transcript:
+            language = language_from_transcript(transcript)
+            if language and language != log.language:
+                updates["language"] = language
         # Who called, so the agent can greet them by name next time (see recognised_caller).
         if transcript and log.direction == CallLog.Direction.INBOUND and not log.is_test and not log.caller_name:
             caller_name = caller_name_from_transcript(transcript)

@@ -115,6 +115,52 @@ def caller_name_from_transcript(transcript: str) -> str:
         return ""
 
 
+# Languages the call logs name (the frontend's languageLabel), with the Unicode block of each one's script.
+LANGUAGE_CODES = ("en", "hi", "kn", "ta", "te", "ml", "mr", "bn", "gu", "pa", "ar")
+SCRIPTS = {
+    "kn": ("ಀ", "೿"), "hi": ("ऀ", "ॿ"), "ta": ("஀", "௿"), "te": ("ఀ", "౿"),
+    "ml": ("ഀ", "ൿ"), "bn": ("ঀ", "৿"), "gu": ("઀", "૿"), "pa": ("਀", "੿"),
+    "ar": ("؀", "ۿ"),
+}
+LANGUAGE_PROMPT = """You read the transcript of a phone call between a hospital's AI receptionist ("AI") and a caller ("Patient").
+Which language did the caller mainly speak? Judge the caller's lines only. If they mixed English words into another
+language (e.g. Kannada with English words), answer that other language. Answer "en" only if they spoke English.
+Respond ONLY with JSON: {"language": one of "en", "hi", "kn", "ta", "te", "ml", "mr", "bn", "gu", "pa", "ar"}"""
+
+
+def _caller_lines(transcript: str) -> str:
+    return "\n".join(line for line in transcript.splitlines() if line.startswith("Patient"))
+
+
+def language_from_script(transcript: str) -> str:
+    """The caller's language from the script their lines are written in ('' if they said nothing). A script
+    with at least a fifth of the caller's letters wins over English; Marathi shares Hindi's script, so the model
+    is needed to tell those apart."""
+    letters = [ch for ch in _caller_lines(transcript) if ch.isalpha()]
+    if not letters:
+        return ""
+    counts = {code: sum(low <= ch <= high for ch in letters) for code, (low, high) in SCRIPTS.items()}
+    code, count = max(counts.items(), key=lambda item: item[1])
+    return code if count >= len(letters) / 5 else "en"
+
+
+def language_from_transcript(transcript: str) -> str:
+    """The language the caller mainly spoke ("en", "kn", "hi", ...): the model's answer, or the script of their
+    lines when the model is off or fails. '' when the caller said nothing."""
+    if not _caller_lines(transcript or "").strip():
+        return ""
+    if is_enabled():
+        try:
+            content = _chat(LANGUAGE_PROMPT, transcript[-MAX_TRANSCRIPT_CHARS:])
+            start, end = content.find("{"), content.rfind("}")
+            code = str(json.loads(content[start:end + 1]).get("language") or "").strip().lower() if start >= 0 and end > start else ""
+            if code in LANGUAGE_CODES:
+                return code
+        except (requests.RequestException, KeyError, IndexError, ValueError, TypeError, AttributeError):
+            logger.warning("Could not detect the call language", exc_info=True)
+    return language_from_script(transcript)
+
+
 def rate_transcript(transcript: str) -> str:
     """The caller's sentiment for this transcript, or '' when off, the transcript is empty, or the model fails."""
     if not is_enabled() or not (transcript or "").strip():
