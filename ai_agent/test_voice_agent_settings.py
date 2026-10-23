@@ -102,7 +102,6 @@ def test_realtime_replaces_the_three_stage_pipeline(admin_client, api_client, cl
     ({"stt": {"provider": "nope", "model": "x"}}, "stt"),
     ({"llm": {"provider": "openai", "model": "gpt-5.4", "temperature": 9}}, "llm"),
     ({"model_type": "turbo"}, "model_type"),
-    ({"first_message": "x" * 501}, "first_message"),
 ])
 def test_invalid_choices_are_rejected(admin_client, clinic, change, field):
     res = admin_client.put(URL, {**STANDARD, **change}, format="json")
@@ -225,7 +224,7 @@ def test_instructions_limit_is_a_setting_and_is_shown_on_the_page(admin_client, 
     """The limit can be raised without a release; the page gets it, and the soft 'long' mark, to show a count."""
     settings.AGENT_PROMPT_MAX_CHARS = 30000
     limits = admin_client.get(URL).data["limits"]
-    assert limits == {"first_message": 500, "system_prompt": 30000, "system_prompt_long": 25000}
+    assert limits == {"system_prompt": 30000, "system_prompt_long": 25000}
 
     long_prompt = "Be brief. " * 2800  # 28,000 characters: over the soft mark, under the limit
     assert admin_client.put(URL, {**STANDARD, "system_prompt": long_prompt}, format="json").status_code == 200
@@ -235,3 +234,8 @@ def test_instructions_limit_is_a_setting_and_is_shown_on_the_page(admin_client, 
 
     settings.AGENT_PROMPT_MAX_CHARS = 40000
     assert admin_client.put(URL, {**STANDARD, "system_prompt": long_prompt + "x" * 3000}, format="json").status_code == 200
+
+
+def test_greeting_has_no_length_limit(admin_client, clinic):
+    res = admin_client.put(URL, {**STANDARD, "first_message": "Welcome to {clinic_name}. " * 100}, format="json")
+    assert res.status_code == 200
