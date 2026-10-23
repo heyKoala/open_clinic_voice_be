@@ -328,6 +328,10 @@ SENTIMENT_API_KEY = get_secret("SENTIMENT_API_KEY", "")
 SENTIMENT_API_BASE = get_secret("SENTIMENT_API_BASE", "https://api.openai.com/v1")
 SENTIMENT_MODEL = get_secret("SENTIMENT_MODEL", "gpt-4o-mini")
 
+# Longest AI receptionist instructions the settings page accepts. A setting, so it can be raised without a
+# release; it stays well inside what the voice models read per turn.
+AGENT_PROMPT_MAX_CHARS = get_secret("AGENT_PROMPT_MAX_CHARS", 100000, cast=int)
+
 # Plivo telephony: buying clinic phone numbers and routing them to the voice agent's SIP app.
 PLIVO_AUTH_ID = get_secret("PLIVO_AUTH_ID", "")
 PLIVO_AUTH_TOKEN = get_secret("PLIVO_AUTH_TOKEN", "")

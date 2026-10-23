@@ -109,6 +109,7 @@ A template of the keys the backend reads:
   "ROCK8_INBOUND_TRUNK_ID": "...", "ROCK8_INBOUND_RULE_ID": "...",
   "VOICE_WORKER_URL": "https://worker.heykoala.ai", "PUBLIC_BASE_URL": "https://api.example.com",
   "SENTIMENT_API_KEY": "...", "SENTIMENT_API_BASE": "https://api.openai.com/v1", "SENTIMENT_MODEL": "gpt-4o-mini",
+  "AGENT_PROMPT_MAX_CHARS": "100000",
   "PLIVO_AUTH_ID": "...", "PLIVO_AUTH_TOKEN": "...", "PLIVO_APP_ID": "...",
   "WHATSAPP_API_TOKEN": "...", "WHATSAPP_PHONE_NUMBER_ID": "...", "WHATSAPP_WEBHOOK_VERIFY_TOKEN": "...",
   "WHATSAPP_APP_SECRET": "...", "WHATSAPP_CONFIRMATION_WEBHOOK_URL": "...",

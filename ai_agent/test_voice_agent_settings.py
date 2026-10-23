@@ -219,3 +219,19 @@ def test_a_save_without_call_audio_fields_keeps_them(admin_client, clinic, setti
     saved = VoiceAgentSettings.objects.get(clinic=clinic)
     assert (saved.noise_cancellation_level, saved.recording_disclosure, saved.listening, saved.max_silence_seconds,
             saved.thinking_sound) == (20, True, "patient", 90, False)
+
+
+def test_instructions_limit_is_a_setting_and_is_shown_on_the_page(admin_client, clinic, settings):
+    """The limit can be raised without a release; the page gets it, and the soft 'long' mark, to show a count."""
+    settings.AGENT_PROMPT_MAX_CHARS = 30000
+    limits = admin_client.get(URL).data["limits"]
+    assert limits == {"first_message": 500, "system_prompt": 30000, "system_prompt_long": 25000}
+
+    long_prompt = "Be brief. " * 2800  # 28,000 characters: over the soft mark, under the limit
+    assert admin_client.put(URL, {**STANDARD, "system_prompt": long_prompt}, format="json").status_code == 200
+
+    res = admin_client.put(URL, {**STANDARD, "system_prompt": long_prompt + "x" * 3000}, format="json")
+    assert res.status_code == 400 and "30000" in str(res.data["system_prompt"])
+
+    settings.AGENT_PROMPT_MAX_CHARS = 40000
+    assert admin_client.put(URL, {**STANDARD, "system_prompt": long_prompt + "x" * 3000}, format="json").status_code == 200

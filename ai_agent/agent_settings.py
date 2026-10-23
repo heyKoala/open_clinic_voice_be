@@ -6,6 +6,8 @@ together with the provider's own config keys so that answering a call never need
 """
 from __future__ import annotations
 
+from django.conf import settings as django_settings
+
 from ai_agent import inbound, providers
 from ai_agent.models import VoiceAgentSettings
 
@@ -69,7 +71,14 @@ LISTENING_LABELS = {
 NOISE_LEVEL_RANGE = (5, 60)
 SILENCE_RANGE = (15, 600)
 MAX_FIRST_MESSAGE = 500
-MAX_SYSTEM_PROMPT = 40000
+# Instructions longer than this still save, but the settings page warns that the agent may reply slower:
+# the whole prompt is re-read on every turn. The hard limit is settings.AGENT_PROMPT_MAX_CHARS.
+LONG_SYSTEM_PROMPT = 25000
+
+
+def max_system_prompt() -> int:
+    """The longest instructions that can be saved (AGENT_PROMPT_MAX_CHARS, so it changes without a release)."""
+    return django_settings.AGENT_PROMPT_MAX_CHARS
 
 
 class InvalidSettings(Exception):
@@ -241,8 +250,8 @@ def save_settings(root, data: dict) -> VoiceAgentSettings:
     system_prompt = str(data.get("system_prompt") or "").strip()
     if len(first_message) > MAX_FIRST_MESSAGE:
         errors["first_message"] = f"Keep the greeting under {MAX_FIRST_MESSAGE} characters."
-    if len(system_prompt) > MAX_SYSTEM_PROMPT:
-        errors["system_prompt"] = f"Keep the prompt under {MAX_SYSTEM_PROMPT} characters."
+    if len(system_prompt) > max_system_prompt():
+        errors["system_prompt"] = f"Keep the prompt under {max_system_prompt()} characters."
 
     stages = {}
     for kind in STAGES_BY_MODEL_TYPE[model_type]:
@@ -282,6 +291,8 @@ def settings_payload(root) -> dict:
     for kind in DEFAULT_STAGES:
         payload[kind] = {key: value for key, value in current[kind].items() if key != "config"}
     payload["defaults"] = {"first_message": DEFAULT_FIRST_MESSAGE, "system_prompt": DEFAULT_SYSTEM_PROMPT}
+    payload["limits"] = {"first_message": MAX_FIRST_MESSAGE, "system_prompt": max_system_prompt(),
+                         "system_prompt_long": LONG_SYSTEM_PROMPT}
     payload["owner_clinic"] = {"id": root.id, "name": root.name}
     payload["catalog_available"] = providers.is_configured()
     payload["preview_providers"] = list(providers.PREVIEW_PROVIDERS)
