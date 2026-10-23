@@ -70,6 +70,8 @@ class HasRock8WebhookSecret(BasePermission):
 
 
 PLACEHOLDER_WORDS = {"unknown", "caller", "patient", "customer", "user", "n/a", "na", "none", "null", "test", "anonymous", "name"}
+DEFAULT_REASON = "AI booked appointment"
+NAME_TITLES = {"mr", "mrs", "ms", "miss", "dr", "smt", "shri", "sri", "master", "baby"}
 
 
 def _as_int(value):
@@ -77,6 +79,30 @@ def _as_int(value):
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _digits(value) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _patient_for_phone(clinic, phone):
+    """The clinic's patient with this phone number, comparing the last 10 digits
+    (stored numbers may carry +91, a leading 0 or spaces)."""
+    wanted = _digits(phone)[-10:]
+    for patient in Patient.objects.filter(clinic=clinic, phone__contains=wanted[-4:]):
+        if _digits(patient.phone).endswith(wanted):
+            return patient
+    return None
+
+
+def _name_words(name) -> set[str]:
+    return {w for w in (part.strip(".,").lower() for part in str(name or "").split()) if w and w not in NAME_TITLES}
+
+
+def _same_person(stored_name, spoken_name) -> bool:
+    """True when one name is the other with words left out ("Shreya" / "Shreya Joseph")."""
+    stored, spoken = _name_words(stored_name), _name_words(spoken_name)
+    return bool(stored and spoken) and (stored <= spoken or spoken <= stored)
 
 
 class AIToolBaseView(APIView):
@@ -231,7 +257,7 @@ class AIToolBookAppointmentView(AIToolBaseView):
         time_str = request.data.get('time')
         patient_phone = request.data.get('patient_phone')
         patient_name = request.data.get('patient_name')
-        reason = str(request.data.get('reason') or '').strip()[:255] or "AI booked appointment"
+        reason = str(request.data.get('reason') or '').strip()[:255] or DEFAULT_REASON
 
         if not all([doctor_id, date_str, time_str, patient_phone, patient_name]):
             return Response({
@@ -358,13 +384,18 @@ class AIToolBookAppointmentView(AIToolBaseView):
                 "message": "Doctor is fully booked for this day."
             })
 
-        patient = Patient.objects.filter(clinic=clinic, phone=patient_phone).first()
+        patient = _patient_for_phone(clinic, patient_phone)
         if not patient:
             patient = Patient.objects.create(
                 clinic=clinic,
                 full_name=patient_name,
                 phone=patient_phone
             )
+        # One patient per phone number: a booking for someone else on that number (a mother booking
+        # for her daughter) stays on the number's patient, with the name the caller gave on the appointment.
+        booked_for = "" if _same_person(patient.full_name, patient_name) else str(patient_name).strip()
+        if booked_for:
+            reason = (f"For: {booked_for}" + ("" if reason == DEFAULT_REASON else f" - {reason}"))[:255]
 
         appt = Appointment.objects.create(
             clinic=clinic,
@@ -380,13 +411,14 @@ class AIToolBookAppointmentView(AIToolBaseView):
         return Response({
             "success": True,
             "appointment_id": appt.id,
-            "patient": patient.full_name,
+            "patient": booked_for or patient.full_name,
             "doctor": doctor.full_name,
             "centre": clinic.name,
             "centre_address": clinic.address,
             "starts_at": appt.starts_at.isoformat(),
             "ends_at": appt.ends_at.isoformat(),
-            "message": "Appointment booked successfully."
+            "message": (f"Appointment booked successfully for {booked_for}, on the record of {patient.full_name}, "
+                        "who has this phone number." if booked_for else "Appointment booked successfully.")
         })
 
 

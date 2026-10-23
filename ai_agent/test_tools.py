@@ -98,7 +98,48 @@ class TestRock8Tools:
         appt = Appointment.objects.get(id=res.data["appointment_id"])
         assert appt.patient == patient
         assert appt.doctor == doctor
-        assert appt.reason == "AI booked appointment"
+        # Booked for someone other than the number's patient: the spoken name is kept on the appointment.
+        assert appt.reason == "For: Kavya Rao"
+        assert res.data["patient"] == "Kavya Rao"
+        assert "Test Patient" in res.data["message"]
+
+    def _book(self, api_client, clinic, doctor, headers, phone, name, reason=None, at="14:00"):
+        body = {"doctor_id": doctor.id, "date": (timezone.localtime().date() + timedelta(days=1)).isoformat(),
+                "time": at, "patient_phone": phone, "patient_name": name}
+        if reason:
+            body["reason"] = reason
+        return api_client.post(f"/api/v1/ai/tools/rock8/{clinic.id}/book/", body, format='json', **headers)
+
+    def test_booking_for_the_numbers_own_patient_adds_no_note(self, api_client, clinic, doctor, rock8_headers):
+        meena = Patient.objects.create(clinic=clinic, full_name="Meena Kumari", phone="9123456780")
+        res = self._book(api_client, clinic, doctor, rock8_headers, "9123456780", "meena kumari")
+        appt = Appointment.objects.get(id=res.data["appointment_id"])
+        assert appt.patient == meena and appt.reason == "AI booked appointment"
+        assert res.data["patient"] == "Meena Kumari" and res.data["message"] == "Appointment booked successfully."
+
+    def test_a_shorter_or_longer_form_of_the_name_is_the_same_patient(self, api_client, clinic, doctor, rock8_headers):
+        shreya = Patient.objects.create(clinic=clinic, full_name="Shreya Joseph", phone="9845045745")
+        first = self._book(api_client, clinic, doctor, rock8_headers, "9845045745", "Mrs. Shreya", at="10:00")
+        second = Patient.objects.create(clinic=clinic, full_name="Asha", phone="9900011122")
+        other = self._book(api_client, clinic, doctor, rock8_headers, "9900011122", "Asha Rao", at="11:00")
+        assert Appointment.objects.get(id=first.data["appointment_id"]).patient == shreya
+        assert Appointment.objects.get(id=first.data["appointment_id"]).reason == "AI booked appointment"
+        assert Appointment.objects.get(id=other.data["appointment_id"]).patient == second
+        assert Appointment.objects.get(id=other.data["appointment_id"]).reason == "AI booked appointment"
+
+    def test_family_booking_keeps_the_spoken_name_and_reason(self, api_client, clinic, doctor, patient, rock8_headers):
+        res = self._book(api_client, clinic, doctor, rock8_headers, "1234567890", "Ananya Rao", reason="Pregnancy check-up")
+        appt = Appointment.objects.get(id=res.data["appointment_id"])
+        assert appt.patient == patient
+        assert appt.reason == "For: Ananya Rao - Pregnancy check-up"
+
+    def test_phone_is_matched_by_digits_not_exact_text(self, api_client, clinic, doctor, rock8_headers):
+        stored = Patient.objects.create(clinic=clinic, full_name="Lakshmi Devi", phone="98450 45745")
+        for at, phone in (("10:00", "+919845045745"), ("10:20", "09845045745"), ("10:40", "919845045745")):
+            res = self._book(api_client, clinic, doctor, rock8_headers, phone, "Lakshmi Devi", at=at)
+            assert res.data["success"] is True, res.data
+            assert Appointment.objects.get(id=res.data["appointment_id"]).patient == stored
+        assert Patient.objects.filter(clinic=clinic).count() == 1
 
     def test_book_appointment_stores_reason(self, api_client, clinic, doctor, patient, rock8_headers):
         target_date = timezone.localtime().date() + timedelta(days=1)
@@ -109,7 +150,7 @@ class TestRock8Tools:
                 "doctor_id": doctor.id,
                 "date": target_date.isoformat(),
                 "time": "14:00",
-                "patient_phone": "1234567890",
+                "patient_phone": "9988776655",
                 "patient_name": "Kavya Rao",
                 "reason": "  Fever and cough for 3 days  " + "x" * 300
             },
