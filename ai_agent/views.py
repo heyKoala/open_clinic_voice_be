@@ -28,7 +28,7 @@ from rest_framework.decorators import action
 from clinics.models import Clinic
 from clinics.views import _owned_root
 from ai_agent.tool_views import HasRock8WebhookSecret, rock8_path, with_rock8_token
-from ai_agent.call_events import is_call_event, match_patient, record_call_event
+from ai_agent.call_events import is_call_event, recognised_caller, record_call_event
 from ai_agent.call_sessions import caller_number, start_call_log
 from ai_agent.routing import clinic_for_number, dialled_number
 
@@ -39,6 +39,21 @@ def _base_url(request) -> str:
     if forwarded_host:
         return f"https://{forwarded_host}"
     return getattr(settings, 'BACKEND_URL', f"{request.scheme}://{request.get_host()}")
+
+
+def welcome_back(greeting: str, name: str) -> str:
+    """The greeting for a returning caller: "… Nice to hear from you again, Srikanth. How can I help you today?"
+    The welcome goes before the greeting's closing question (or at the end if it has none)."""
+    # Greet by the first name: skip initials such as "K." or "K" in "K. Srikanth Rao".
+    words = [word for word in name.split() if len(word.rstrip(".")) > 1]
+    welcome = f"Nice to hear from you again, {words[0] if words else name}."
+    greeting = greeting.strip()
+    if greeting.endswith("?"):
+        head, _, question = greeting[:-1].rpartition(". ")
+        if head:
+            return f"{head}. {welcome} {question}?"
+        return f"{welcome} {greeting}"
+    return f"{greeting} {welcome}".strip()
 
 
 def build_agent_config(clinic, request, caller: str = "") -> dict:
@@ -60,16 +75,19 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
         f"\n\nCRITICAL CONTEXT: Today's date is {current_date}. Always base your date calculations "
         "(like 'tomorrow' or 'next week') on this exact date."
     )
+    first_message = render(agent["first_message"], root)
     if caller:
-        known = match_patient(root, caller)
+        known = recognised_caller(root, caller)
         system_prompt += (
             f"\n\nCALLER: This call is from +{caller}. Use it as patient_phone unless the caller asks to use a "
             "different number (read it back to confirm)."
         )
         if known:
+            first_message = welcome_back(first_message, known)
             system_prompt += (
-                f" This number belongs to an existing patient named {known.full_name}; confirm with "
-                f"\"Am I speaking with {known.full_name}?\" and book for another name only if they say so."
+                f" They have called before as {known}, and the greeting already welcomed them back by name, so do "
+                f"not greet them again. If they say they are someone else, apologise briefly and carry on. When "
+                f"booking, use {known} as the patient name only after they confirm the appointment is for them."
             )
     else:
         system_prompt += "\n\nCALLER: The caller's number is unknown; ask for their phone number and read it back to confirm."
@@ -176,7 +194,7 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
 
     config = {
         "system_prompt": system_prompt,
-        "first_message": render(agent["first_message"], root),
+        "first_message": first_message,
         "model_type": agent["model_type"],
         "tools": tools,
         **session_config(agent),

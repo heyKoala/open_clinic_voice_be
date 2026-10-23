@@ -92,6 +92,29 @@ def summarize_transcript(transcript: str) -> str:
         return ""
 
 
+CALLER_NAME_PROMPT = """You read the transcript of a phone call between a hospital's AI receptionist ("AI") and a caller ("Patient").
+What is the caller's own name, as they said it on this call? Only the name of the person speaking: if they only
+gave the name of someone else (a family member they are calling for), or never said their name, answer "".
+Write the name in English letters, even if the call was in another language or script.
+Respond ONLY with JSON: {"name": "<the caller's name>" | ""}"""
+MAX_CALLER_NAME_CHARS = 60
+
+
+def caller_name_from_transcript(transcript: str) -> str:
+    """The caller's own name from the transcript, or '' when unsaid, off, or the model fails."""
+    if not is_enabled() or not (transcript or "").strip():
+        return ""
+    try:
+        content = _chat(CALLER_NAME_PROMPT, transcript[-MAX_TRANSCRIPT_CHARS:])
+        start, end = content.find("{"), content.rfind("}")
+        name = json.loads(content[start:end + 1]).get("name") if start >= 0 and end > start else ""
+        name = " ".join(str(name or "").split())
+        return name if len(name) <= MAX_CALLER_NAME_CHARS else ""
+    except (requests.RequestException, KeyError, IndexError, ValueError, TypeError, AttributeError):
+        logger.warning("Could not read the caller's name", exc_info=True)
+        return ""
+
+
 def rate_transcript(transcript: str) -> str:
     """The caller's sentiment for this transcript, or '' when off, the transcript is empty, or the model fails."""
     if not is_enabled() or not (transcript or "").strip():

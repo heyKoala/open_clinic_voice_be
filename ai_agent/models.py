@@ -34,6 +34,9 @@ class CallLog(ClinicScopedModel):
     # How the caller felt: from the provider's call analysis, or rated from the transcript (ai_agent.sentiment).
     # Blank until known.
     sentiment = models.CharField(max_length=10, choices=Sentiment.choices, blank=True, db_index=True)
+    # The name the caller gave for themselves, read from the transcript (ai_agent.sentiment): the agent
+    # greets them by it when they call again from this number, even if they never booked. Blank if unsaid.
+    caller_name = models.CharField(max_length=100, blank=True)
     # Provider call id, so repeated/retried webhook events update one log instead of duplicating it.
     external_call_id = models.CharField(max_length=100, blank=True, db_index=True)
     # Started from the app's "Test call" (staff trying the agent), not by a patient: labelled in the

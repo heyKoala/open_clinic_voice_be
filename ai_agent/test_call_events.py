@@ -591,3 +591,80 @@ class TestClassifier:
                 assert classify_transcript(transcript) == expected
         settings.SENTIMENT_API_KEY = ""
         assert classify_transcript(transcript) is None
+
+
+class TestReturningCaller:
+    """A caller who rang before is welcomed back by name: from the name they gave on an earlier call,
+    or else from the patient record for their number."""
+
+    def _start(self, client, clinic, capture, phone="+919876543210", room="room-r1"):
+        with mock.patch("ai_agent.call_sessions.enqueue_recording_fetch"):
+            return _post(client, clinic, {"room_name": room, "phone_number": phone, "metadata": {}}, capture)
+
+    def _earlier_call(self, clinic, **fields):
+        from django.utils import timezone
+        defaults = {"direction": "inbound", "occurred_at": timezone.now() - timezone.timedelta(days=1),
+                    "phone": "+919876543210", "caller_name": "Srikanth"}
+        return CallLog.objects.create(clinic=clinic, **{**defaults, **fields})
+
+    def test_first_time_caller_gets_the_plain_greeting(self, api_client, clinic, django_capture_on_commit_callbacks):
+        res = self._start(api_client, clinic, django_capture_on_commit_callbacks)
+        assert "again" not in res.data["first_message"]
+        assert "called before" not in res.data["system_prompt"]
+
+    def test_caller_who_only_asked_a_question_is_welcomed_back(self, api_client, clinic, django_capture_on_commit_callbacks):
+        self._earlier_call(clinic)
+        res = self._start(api_client, clinic, django_capture_on_commit_callbacks)
+        assert res.data["first_message"] == "Welcome to Test Clinic. Nice to hear from you again, Srikanth. How can I help you today?"
+        assert "called before as Srikanth" in res.data["system_prompt"]
+
+    def test_the_callers_own_name_beats_a_family_members_record(self, api_client, clinic, django_capture_on_commit_callbacks):
+        Patient.objects.create(clinic=clinic, full_name="Priya Rao", phone="+91 98765 43210")  # booked by her mother
+        self._earlier_call(clinic, caller_name="Lakshmi Rao")
+        res = self._start(api_client, clinic, django_capture_on_commit_callbacks)
+        assert "again, Lakshmi." in res.data["first_message"]
+
+    def test_patient_record_is_used_when_no_name_was_heard(self, api_client, clinic, django_capture_on_commit_callbacks):
+        Patient.objects.create(clinic=clinic, full_name="K. Srikanth Rao", phone="9876543210")
+        res = self._start(api_client, clinic, django_capture_on_commit_callbacks)
+        assert "again, Srikanth." in res.data["first_message"]
+
+    def test_test_calls_and_other_numbers_are_not_recalled(self, api_client, clinic, django_capture_on_commit_callbacks):
+        self._earlier_call(clinic, is_test=True)
+        self._earlier_call(clinic, phone="+919000000000", caller_name="Someone Else")
+        res = self._start(api_client, clinic, django_capture_on_commit_callbacks)
+        assert "again" not in res.data["first_message"]
+
+    def test_welcome_goes_before_the_closing_question(self):
+        from ai_agent.views import welcome_back
+        assert welcome_back("Hello. I'm Kavya. How can I help you today?", "Asha") == \
+            "Hello. I'm Kavya. Nice to hear from you again, Asha. How can I help you today?"
+        assert welcome_back("How can I help?", "Asha") == "Nice to hear from you again, Asha. How can I help?"
+        assert welcome_back("Welcome to Test Clinic.", "Asha") == "Welcome to Test Clinic. Nice to hear from you again, Asha."
+
+    def test_name_is_read_from_the_transcript_after_the_call(self, clinic):
+        from django.utils import timezone
+        from ai_agent.call_events import fetch_media
+        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="in_progress",
+                                     external_call_id="name-1", phone="+919876543210")
+        response = mock.MagicMock()
+        response.json.side_effect = ValueError
+        response.text = "AI: Welcome.\nPatient: This is Srikanth, what are the OPD timings?\nAI: Nine to five."
+        with mock.patch("ai_agent.call_events.requests.get", return_value=response), \
+             mock.patch("ai_agent.call_events.caller_name_from_transcript", return_value="Srikanth") as read_name, \
+             mock.patch("ai_agent.call_events.summarize_transcript", return_value=""), \
+             mock.patch("ai_agent.call_events.rate_transcript", return_value=""), \
+             mock.patch("ai_agent.call_events.classify_outcome", return_value=None):
+            fetch_media(log.id, "https://cdn.example/transcript.txt", None)
+        assert read_name.called
+        assert CallLog.objects.get(id=log.id).caller_name == "Srikanth"
+
+    def test_model_reply_is_cleaned(self, settings):
+        from ai_agent.sentiment import caller_name_from_transcript
+        settings.SENTIMENT_API_KEY = "k"
+        for reply, expected in [('{"name": "  Srikanth   Rao "}', "Srikanth Rao"), ('{"name": ""}', ""), ("garbage", ""),
+                                ('{"name": "' + "x" * 80 + '"}', "")]:
+            with mock.patch("ai_agent.sentiment._chat", return_value=reply):
+                assert caller_name_from_transcript("AI: Hi\nPatient: I'm Srikanth.") == expected
+        settings.SENTIMENT_API_KEY = ""
+        assert caller_name_from_transcript("AI: Hi\nPatient: I'm Srikanth.") == ""

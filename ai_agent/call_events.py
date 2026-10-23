@@ -40,7 +40,9 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from ai_agent.models import CallLog
-from ai_agent.sentiment import classify_transcript, normalize_sentiment, rate_transcript, summarize_transcript
+from ai_agent.sentiment import (
+    caller_name_from_transcript, classify_transcript, normalize_sentiment, rate_transcript, summarize_transcript,
+)
 from patients.models import Patient
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,22 @@ def match_patient(clinic, *phones):
             if _digits(stored).endswith(wanted):
                 return Patient.objects.get(id=patient_id)
     return None
+
+
+def recognised_caller(clinic, phone) -> str:
+    """The name to greet a caller from this number by ('' for a first-time or unknown caller).
+
+    The name the caller gave on their latest earlier call comes first: it is who actually speaks from this
+    phone, whereas the patient record may be a family member booked under it. Otherwise the patient record."""
+    wanted = _digits(phone)[-10:]
+    if len(wanted) < 7:
+        return ""
+    for name, stored in (CallLog.objects.filter(clinic__in=clinic.group_clinics(), is_test=False, phone__endswith=wanted[-4:])
+                         .exclude(caller_name="").order_by("-occurred_at").values_list("caller_name", "phone")[:20]):
+        if _digits(stored).endswith(wanted):
+            return name
+    patient = match_patient(clinic, phone)
+    return patient.full_name if patient else ""
 
 
 def _timed_turns(text: str) -> list[tuple[int, str, str]]:
@@ -409,6 +427,11 @@ def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str
             summary = summarize_transcript(transcript)
             if summary:
                 updates["summary"] = summary
+        # Who called, so the agent can greet them by name next time (see recognised_caller).
+        if transcript and log.direction == CallLog.Direction.INBOUND and not log.is_test and not log.caller_name:
+            caller_name = caller_name_from_transcript(transcript)
+            if caller_name:
+                updates["caller_name"] = caller_name
         # No outcome from the provider either (inbound calls on the hospital line, test calls): decide it.
         if transcript and log.direction == CallLog.Direction.INBOUND and log.outcome in PLACEHOLDER_OUTCOMES:
             outcome = classify_outcome(payload, transcript)
