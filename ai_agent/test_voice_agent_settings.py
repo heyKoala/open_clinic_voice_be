@@ -46,6 +46,19 @@ def catalog(settings):
         yield
 
 
+@pytest.fixture(autouse=True)
+def team_login(clinic_admin):
+    """Most tests change the models, which only our team's staff logins may do."""
+    clinic_admin.is_staff = True
+    clinic_admin.save(update_fields=["is_staff"])
+    return clinic_admin
+
+
+def _hospital_admin(user):
+    user.is_staff = False
+    user.save(update_fields=["is_staff"])
+
+
 def _call_config(api_client, clinic):
     url = f"/api/v1/ai/webhooks/rock8/{clinic.id}/{rock8_clinic_token(clinic.id)}/"
     return api_client.post(url, data=json.dumps({}), content_type="application/json").data
@@ -158,6 +171,138 @@ def test_call_audio_defaults_are_sent_with_every_call(admin_client, api_client, 
     config = _call_config(api_client, clinic)
     assert config["max_silence_seconds"] == 60 and config["thinking_sound"] is True
     assert config["vad_config"]["min_silence_duration"] == 0.45
+    # Before the hang-up: "Are you still there?" at 10 s and 20 s, then the goodbye.
+    assert (config["inactivity_timeout"], config["inactivity_max_prompts"]) == (10, 2)
+    assert config["inactivity_message"] == "Are you still there?"
+    assert config["inactivity_end_message"] == "I'll end the call now since I haven't heard from you. Goodbye!"
+
+
+def test_saved_inactivity_check_is_sent_with_every_call(admin_client, api_client, clinic, settings):
+    settings.ROCK8_INBOUND_TRUNK_ID = settings.ROCK8_INBOUND_RULE_ID = ""
+    body = {**STANDARD, "inactivity_timeout": 15, "inactivity_max_prompts": 1,
+            "inactivity_message": "  Hello, can you hear me? ", "inactivity_end_message": "Please call us back. Bye!"}
+    res = admin_client.put(URL, data=json.dumps(body), content_type="application/json")
+    assert res.status_code == 200, res.data
+    config = _call_config(api_client, clinic)
+    assert (config["inactivity_timeout"], config["inactivity_max_prompts"]) == (15, 1)
+    assert (config["inactivity_message"], config["inactivity_end_message"]) == ("Hello, can you hear me?", "Please call us back. Bye!")
+
+
+# ---------------------------------------------------------------------------------------------
+# Models are our team's (staff logins); the hospital's admins only pick the voice.
+# ---------------------------------------------------------------------------------------------
+
+def test_only_staff_are_told_they_can_change_models(admin_client, clinic_admin):
+    assert admin_client.get(URL).data["can_change_models"] is True
+    assert admin_client.get("/api/v1/accounts/me/").data["is_staff"] is True
+    _hospital_admin(clinic_admin)
+    assert admin_client.get(URL).data["can_change_models"] is False
+    assert admin_client.get("/api/v1/accounts/me/").data["is_staff"] is False
+
+
+def test_a_hospital_admin_changes_the_voice_but_not_the_models(admin_client, api_client, clinic, clinic_admin):
+    assert admin_client.put(URL, data=json.dumps(STANDARD), content_type="application/json").status_code == 200
+    _hospital_admin(clinic_admin)
+    sneaky = {**STANDARD, "first_message": "Hello from {clinic_name}.",
+              "llm": {"provider": "openai", "model": "gpt-5.4", "temperature": 1.5},
+              "tts": {"provider": "sarvam", "model": "bulbul:v3", "voice": "anushka", "language": "en-IN"}}
+    res = admin_client.put(URL, data=json.dumps(sneaky), content_type="application/json")
+    assert res.status_code == 200, res.data
+    # The voice and the greeting changed; the language model's temperature and the speaking language did not.
+    assert res.data["tts"]["voice"] == "anushka" and res.data["tts"]["language"] == "hi-IN"
+    assert res.data["llm"]["temperature"] == 0.5 and res.data["first_message"] == "Hello from {clinic_name}."
+    config = _call_config(api_client, clinic)
+    assert config["tts_config"]["config"]["speaker"] == "anushka" and config["llm_config"]["config"]["temperature"] == 0.5
+
+
+def test_a_hospital_admin_cannot_switch_to_realtime(admin_client, clinic_admin):
+    _hospital_admin(clinic_admin)
+    res = admin_client.put(URL, data=json.dumps({**STANDARD, "model_type": "realtime",
+                                                 "realtime": {"provider": "gemini_live", "model": "gemini-live", "voice": "Puck"}}),
+                           content_type="application/json")
+    assert res.status_code == 200 and res.data["model_type"] == "standard"
+
+
+def test_a_hospital_admins_reset_keeps_the_models(admin_client, clinic, clinic_admin):
+    assert admin_client.put(URL, data=json.dumps({**STANDARD, "max_silence_seconds": 90}),
+                            content_type="application/json").status_code == 200
+    _hospital_admin(clinic_admin)
+    res = admin_client.delete(URL)
+    assert res.status_code == 200
+    assert res.data["max_silence_seconds"] == 60 and res.data["first_message"] != STANDARD["first_message"]
+    assert (res.data["llm"]["model"], res.data["tts"]["voice"]) == ("gpt-5.4", "ritu")
+
+
+# ---------------------------------------------------------------------------------------------
+# Answering hours: off by default (the hospital's phone system forwards the calls it wants answered).
+# ---------------------------------------------------------------------------------------------
+
+def _at(hour, minute=0):
+    """The hospital's local time today at hour:minute."""
+    from django.utils import timezone
+    return timezone.localtime().replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+NIGHTS = {**STANDARD, "answer_hours_only": True, "answer_from": "20:00", "answer_until": "08:00"}
+
+
+def test_calls_are_answered_at_any_hour_by_default(admin_client, api_client, clinic):
+    res = admin_client.get(URL)
+    assert (res.data["answer_hours_only"], res.data["answer_from"], res.data["answer_until"]) == (False, "20:00", "08:00")
+    assert res.data["answering_now"] is True
+    with mock.patch("django.utils.timezone.now", return_value=_at(14)):
+        assert _call_config(api_client, clinic)["tools"]
+
+
+@pytest.mark.parametrize("hour, minute, answered", [
+    (20, 0, True), (23, 30, True), (2, 0, True), (7, 59, True),   # 8 PM to 8 AM, across midnight
+    (8, 0, False), (14, 0, False), (19, 59, False),
+])
+def test_only_the_set_hours_are_answered(admin_client, api_client, clinic, hour, minute, answered):
+    assert admin_client.put(URL, data=json.dumps(NIGHTS), content_type="application/json").status_code == 200
+    with mock.patch("django.utils.timezone.now", return_value=_at(hour, minute)):
+        config = _call_config(api_client, clinic)
+    assert bool(config["tools"]) is answered
+    if not answered:
+        assert config["first_message"] == (f"Thank you for calling {clinic.name}. Our AI assistant answers calls from "
+                                           "8 PM to 8 AM. Please call the hospital during the day.")
+        assert (config["inactivity_max_prompts"], config["inactivity_end_message"]) == (0, "Goodbye!")
+
+
+def test_daytime_hours_and_a_custom_closed_message(admin_client, api_client, clinic):
+    body = {**NIGHTS, "answer_from": "09:30", "answer_until": "18:00", "closed_message": "We are closed. Call back at 9:30."}
+    res = admin_client.put(URL, data=json.dumps(body), content_type="application/json")
+    assert res.status_code == 200 and res.data["answer_from"] == "09:30"
+    with mock.patch("django.utils.timezone.now", return_value=_at(9, 30)):
+        assert _call_config(api_client, clinic)["tools"]
+    with mock.patch("django.utils.timezone.now", return_value=_at(18)):
+        assert _call_config(api_client, clinic)["first_message"] == "We are closed. Call back at 9:30."
+
+
+def test_test_calls_are_answered_outside_the_hours(admin_client, api_client, clinic):
+    assert admin_client.put(URL, data=json.dumps(NIGHTS), content_type="application/json").status_code == 200
+    url = f"/api/v1/ai/webhooks/rock8/{clinic.id}/{rock8_clinic_token(clinic.id)}/test/"
+    with mock.patch("django.utils.timezone.now", return_value=_at(14)):
+        config = api_client.post(url, data=json.dumps({}), content_type="application/json").data
+    assert config["tools"]
+
+
+@pytest.mark.parametrize("change, field", [
+    ({"answer_from": "25:00"}, "answer_from"),
+    ({"answer_until": "20:00"}, "answer_until"),   # same as the start
+    ({"closed_message": "x" * 301}, "closed_message"),
+])
+def test_invalid_answering_hours_are_rejected(admin_client, clinic, change, field):
+    res = admin_client.put(URL, data=json.dumps({**NIGHTS, **change}), content_type="application/json")
+    assert res.status_code == 400 and field in res.data
+
+
+def test_the_goodbye_must_come_before_the_hang_up(admin_client, clinic):
+    # 30 s x (2 check-ins + the goodbye) = 90 s, but the line hangs up at 60 s.
+    res = admin_client.put(URL, data=json.dumps({**STANDARD, "inactivity_timeout": 30}), content_type="application/json")
+    assert res.status_code == 400 and "90 s" in res.data["inactivity_timeout"]
+    ok = {**STANDARD, "inactivity_timeout": 30, "max_silence_seconds": 120}
+    assert admin_client.put(URL, data=json.dumps(ok), content_type="application/json").status_code == 200
 
 
 def test_saved_call_audio_changes_the_call_config_and_is_pushed_to_the_number(admin_client, api_client, clinic, settings):
@@ -201,6 +346,10 @@ def test_noise_cancellation_off_drops_the_level_and_warns_without_inbound_ids(ad
     ({"listening": "eager"}, "listening"),
     ({"max_silence_seconds": 5}, "max_silence_seconds"),
     ({"thinking_sound": "yes"}, "thinking_sound"),
+    ({"inactivity_timeout": 2}, "inactivity_timeout"),
+    ({"inactivity_max_prompts": 9}, "inactivity_max_prompts"),
+    ({"inactivity_message": "   "}, "inactivity_message"),
+    ({"inactivity_end_message": "x" * 201}, "inactivity_end_message"),
 ])
 def test_invalid_call_audio_is_rejected(admin_client, clinic, change, field):
     res = admin_client.put(URL, data=json.dumps({**STANDARD, **change}), content_type="application/json")
@@ -211,13 +360,13 @@ def test_a_save_without_call_audio_fields_keeps_them(admin_client, clinic, setti
     """The original front end only sends greeting, prompt and models: the call audio settings must survive."""
     settings.ROCK8_INBOUND_TRUNK_ID = settings.ROCK8_INBOUND_RULE_ID = ""
     tuned = {**STANDARD, "noise_cancellation_level": 20, "recording_disclosure": True, "listening": "patient",
-             "max_silence_seconds": 90, "thinking_sound": False}
+             "max_silence_seconds": 90, "thinking_sound": False, "inactivity_timeout": 20, "inactivity_message": "Hello?"}
     assert admin_client.put(URL, data=json.dumps(tuned), content_type="application/json").status_code == 200
     res = admin_client.put(URL, data=json.dumps(STANDARD), content_type="application/json")
     assert res.status_code == 200
     saved = VoiceAgentSettings.objects.get(clinic=clinic)
     assert (saved.noise_cancellation_level, saved.recording_disclosure, saved.listening, saved.max_silence_seconds,
-            saved.thinking_sound) == (20, True, "patient", 90, False)
+            saved.thinking_sound, saved.inactivity_timeout, saved.inactivity_message) == (20, True, "patient", 90, False, 20, "Hello?")
 
 
 def test_instructions_limit_is_a_setting_and_is_shown_on_the_page(admin_client, clinic, settings):

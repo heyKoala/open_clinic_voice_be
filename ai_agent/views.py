@@ -10,7 +10,8 @@ from rest_framework.pagination import PageNumberPagination
 from ai_agent import providers
 from ai_agent import inbound
 from ai_agent.agent_settings import (
-    InvalidSettings, call_flags, effective_settings, provider_config, render, save_settings, session_config, settings_payload,
+    MODEL_FIELDS, InvalidSettings, answering_now, call_flags, closed_message_for, effective_settings, provider_config, render, save_settings,
+    session_config, settings_payload,
 )
 from ai_agent.models import EMPTY_CALL, AgentConfiguration, CallLog, VoiceAgentSettings
 from ai_agent.serializers import AgentConfigurationSerializer, CallLogSerializer
@@ -56,11 +57,39 @@ def welcome_back(greeting: str, name: str) -> str:
     return f"{greeting} {welcome}".strip()
 
 
-def build_agent_config(clinic, request, caller: str = "") -> dict:
+def _with_models(config: dict, agent: dict) -> dict:
+    if agent["model_type"] == VoiceAgentSettings.ModelType.REALTIME:
+        config["realtime_config"] = provider_config(agent["realtime"])
+    else:
+        for stage in ("stt", "llm", "tts"):
+            config[f"{stage}_config"] = provider_config(agent[stage])
+    return config
+
+
+def closed_config(root, agent: dict) -> dict:
+    """A call outside the answering hours: the closed message, a goodbye a few seconds later, and the call ends.
+    No tools, so nothing can be booked."""
+    message = closed_message_for(agent, root)
+    return _with_models({
+        "system_prompt": (f"You answer the phone for {root.name}, but only to say it is outside the AI assistant's "
+                          f"hours. Whatever the caller says, reply only with: \"{message}\" Do not help with anything else."),
+        "first_message": message,
+        "model_type": agent["model_type"],
+        "tools": [],
+        **session_config(agent),
+        "inactivity_timeout": 4,
+        "inactivity_max_prompts": 0,
+        "inactivity_end_message": "Goodbye!",
+        "max_silence_seconds": 15,
+    }, agent)
+
+
+def build_agent_config(clinic, request, caller: str = "", is_test: bool = False) -> dict:
     """Agent configuration for a call to ``clinic``'s phone number.
 
     Centres share their main clinic's number, so the agent represents the whole group (the main
-    clinic and its centres) and nothing else; the tools are scoped to the same group.
+    clinic and its centres) and nothing else; the tools are scoped to the same group. Outside the
+    answering hours (when set) the caller only hears the closed message; test calls are always answered.
     """
     from django.utils import timezone
 
@@ -69,6 +98,8 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
     current_date = timezone.now().strftime('%B %d, %Y (%A)')
 
     agent = effective_settings(root)
+    if not is_test and not answering_now(agent):
+        return closed_config(root, agent)
     # The admin's instructions, then the facts only the system knows: date, caller and centres.
     system_prompt = (
         f"{render(agent['system_prompt'], root)}"
@@ -192,19 +223,13 @@ def build_agent_config(clinic, request, caller: str = "") -> dict:
             "Never call it for an appointment that was not booked in this call."
         )
 
-    config = {
+    return _with_models({
         "system_prompt": system_prompt,
         "first_message": first_message,
         "model_type": agent["model_type"],
         "tools": tools,
         **session_config(agent),
-    }
-    if agent["model_type"] == VoiceAgentSettings.ModelType.REALTIME:
-        config["realtime_config"] = provider_config(agent["realtime"])
-    else:
-        for stage in ("stt", "llm", "tts"):
-            config[f"{stage}_config"] = provider_config(agent[stage])
-    return config
+    }, agent)
 
 
 def _handle_webhook(clinic, request, is_test=False):
@@ -227,7 +252,7 @@ def _handle_webhook(clinic, request, is_test=False):
         start_call_log(clinic, data, is_test=is_test)
     except Exception:
         logger.exception("Could not start the call log for clinic %s", clinic.id)  # never block the call
-    return Response(build_agent_config(clinic, request, caller))
+    return Response(build_agent_config(clinic, request, caller, is_test=is_test))
 
 
 class Rock8WebhookView(APIView):
@@ -430,6 +455,12 @@ def _catalog_error(exc) -> Response:
     return Response({"detail": str(exc)}, status=code)
 
 
+def _settings_payload(root, request) -> dict:
+    # The models (speech-to-text, language model, text-to-speech) are chosen by our team's staff logins only;
+    # the hospital's admins see and change just the voice.
+    return {**settings_payload(root), "can_change_models": bool(request.user.is_staff)}
+
+
 class VoiceAgentSettingsView(APIView):
     permission_classes = [IsClinicAdmin]
 
@@ -437,7 +468,7 @@ class VoiceAgentSettingsView(APIView):
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
-        return Response(settings_payload(root))
+        return Response(_settings_payload(root, request))
 
     def put(self, request):
         root = _owned_root(request)
@@ -445,25 +476,30 @@ class VoiceAgentSettingsView(APIView):
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
         before = call_flags(root)
         try:
-            save_settings(root, request.data if isinstance(request.data, dict) else {})
+            save_settings(root, request.data if isinstance(request.data, dict) else {},
+                          can_change_models=request.user.is_staff)
         except InvalidSettings as exc:
             return Response(exc.errors, status=status.HTTP_400_BAD_REQUEST)
         except providers.ProviderError as exc:
             return _catalog_error(exc)
-        payload = settings_payload(root)
+        payload = _settings_payload(root, request)
         after = call_flags(root)
         if after != before:
             payload["inbound_applied"] = inbound.apply_call_flags(after)
         return Response(payload)
 
     def delete(self, request):
-        """Back to the built-in defaults."""
+        """Back to the built-in defaults. The hospital's admins keep the models (and voice) our team chose."""
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
         before = call_flags(root)
+        saved = VoiceAgentSettings.objects.filter(clinic=root).first()
+        kept = {name: getattr(saved, name) for name in MODEL_FIELDS} if saved and not request.user.is_staff else None
         VoiceAgentSettings.objects.filter(clinic=root).delete()
-        payload = settings_payload(root)
+        if kept:
+            VoiceAgentSettings.objects.create(clinic=root, **kept)
+        payload = _settings_payload(root, request)
         after = call_flags(root)
         if after != before:
             payload["inbound_applied"] = inbound.apply_call_flags(after)

@@ -252,9 +252,23 @@ def _when(dt) -> str:
     return local.strftime("%A, %d %B at %I:%M %p").replace(" 0", " ")
 
 
+OUTBOUND_MAX_SILENCE = 30
+
+
+def outbound_session_config(agent: dict) -> dict:
+    """The page's listening settings with the silence limit capped at 30 s, and the "are you still there?"
+    check-ins brought forward so that they and the goodbye still come before that hang-up."""
+    from ai_agent.agent_settings import session_config
+    config = session_config(agent)
+    config["max_silence_seconds"] = min(OUTBOUND_MAX_SILENCE, config["max_silence_seconds"])
+    fits = (config["max_silence_seconds"] - 1) // (config["inactivity_max_prompts"] + 1)
+    config["inactivity_timeout"] = max(1, min(config["inactivity_timeout"], fits))
+    return config
+
+
 def build_config(call: PatientCall, base_url: str) -> dict:
     """The agent configuration for one reminder or feedback call (same shape as an incoming call's)."""
-    from ai_agent.agent_settings import effective_settings, provider_config, session_config
+    from ai_agent.agent_settings import effective_settings, provider_config
     from ai_agent.models import VoiceAgentSettings
     from ai_agent.tool_views import rock8_path
 
@@ -334,7 +348,7 @@ def build_config(call: PatientCall, base_url: str) -> dict:
         "tools": tools,
         # Listening and sounds as set on the Agent settings page; a shorter silence limit than inbound calls,
         # since a patient who has gone quiet on a reminder call is not coming back.
-        **{**session_config(agent), "max_silence_seconds": min(30, session_config(agent)["max_silence_seconds"])},
+        **outbound_session_config(agent),
     }
     if agent["model_type"] == VoiceAgentSettings.ModelType.REALTIME:
         config["realtime_config"] = provider_config(agent["realtime"])

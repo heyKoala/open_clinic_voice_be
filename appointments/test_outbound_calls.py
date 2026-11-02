@@ -203,3 +203,6 @@ def test_outbound_call_carries_the_call_audio_settings(voice, appointment, clini
     config = outbound.build_config(call, "https://clinic.example.com")
     assert config["vad_config"]["min_silence_duration"] == 0.25 and config["thinking_sound"] is False
     assert config["max_silence_seconds"] == 30  # capped for outbound calls
+    # Asked at 9 s and 18 s, goodbye at 27 s: all before the 30 s hang-up.
+    assert (config["inactivity_timeout"], config["inactivity_max_prompts"]) == (9, 2)
+    assert config["inactivity_message"] == "Are you still there?"

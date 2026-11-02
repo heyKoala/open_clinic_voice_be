@@ -6,7 +6,10 @@ together with the provider's own config keys so that answering a call never need
 """
 from __future__ import annotations
 
+import datetime
+
 from django.conf import settings as django_settings
+from django.utils import timezone
 
 from ai_agent import inbound, providers
 from ai_agent.models import VoiceAgentSettings
@@ -55,7 +58,21 @@ CALL_DEFAULTS = {
     "listening": VoiceAgentSettings.Listening.BALANCED,
     "max_silence_seconds": 60,
     "thinking_sound": True,
+    # "Are you still there?" after 10 s of silence, again after 20 s, then the goodbye and hang up (about 30 s);
+    # max_silence_seconds stays as the hard limit behind it.
+    "inactivity_timeout": 10,
+    "inactivity_message": "Are you still there?",
+    "inactivity_max_prompts": 2,
+    "inactivity_end_message": "I'll end the call now since I haven't heard from you. Goodbye!",
+    # Answering hours for the hospital number ("HH:MM", hospital time). Off by default: the hospital's own phone
+    # system forwards the calls it wants answered (unanswered by reception, after hours).
+    "answer_hours_only": False,
+    "answer_from": "20:00",
+    "answer_until": "08:00",
+    "closed_message": "",   # blank: closed_message_for() builds one from the hours
 }
+ANSWER_TIME_FIELDS = ("answer_from", "answer_until")
+CLOSED_MESSAGE_MAX = 300
 CALL_FIELDS = tuple(CALL_DEFAULTS)
 LISTENING_PRESETS = {
     # min_silence_duration: how long the caller must be quiet before the receptionist takes its turn.
@@ -70,6 +87,9 @@ LISTENING_LABELS = {
 }
 NOISE_LEVEL_RANGE = (5, 60)
 SILENCE_RANGE = (15, 600)
+INACTIVITY_TIMEOUT_RANGE = (5, 120)
+INACTIVITY_PROMPTS_RANGE = (0, 5)
+INACTIVITY_MESSAGE_MAX = 200
 # Instructions longer than this still save, but the settings page warns that the agent may reply slower:
 # the whole prompt is re-read on every turn. The hard limit is settings.AGENT_PROMPT_MAX_CHARS.
 LONG_SYSTEM_PROMPT = 25000
@@ -109,6 +129,8 @@ def effective_settings(root) -> dict:
     if model_type == VoiceAgentSettings.ModelType.REALTIME and not stages["realtime"].get("provider"):
         model_type = VoiceAgentSettings.ModelType.STANDARD
     calls = {name: (getattr(saved, name) if saved else default) for name, default in CALL_DEFAULTS.items()}
+    for name in ANSWER_TIME_FIELDS:
+        calls[name] = _hhmm(calls[name])
     return {
         "first_message": (saved.first_message if saved else "") or DEFAULT_FIRST_MESSAGE,
         "system_prompt": (saved.system_prompt if saved else "") or DEFAULT_SYSTEM_PROMPT,
@@ -117,6 +139,48 @@ def effective_settings(root) -> dict:
         **stages,
         **calls,
     }
+
+
+def _hhmm(value) -> str:
+    """"20:00" from a time or a "20:00"/"20:00:00" string."""
+    return value.strftime("%H:%M") if isinstance(value, datetime.time) else str(value or "")[:5]
+
+
+def _clock(text: str) -> datetime.time | None:
+    try:
+        return datetime.datetime.strptime(str(text or "").strip()[:5], "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def spoken_time(text: str) -> str:
+    """"20:00" -> "8 PM", "08:30" -> "8:30 AM"."""
+    moment = _clock(text)
+    if moment is None:
+        return text
+    hour = moment.hour % 12 or 12
+    return f"{hour}{f':{moment.minute:02d}' if moment.minute else ''} {'AM' if moment.hour < 12 else 'PM'}"
+
+
+def answering_now(current: dict, now=None) -> bool:
+    """Whether calls to the hospital number are answered at ``now`` (default: the current hospital time).
+    The hours may cross midnight (8 PM to 8 AM)."""
+    if not current["answer_hours_only"]:
+        return True
+    start, end = _clock(current["answer_from"]), _clock(current["answer_until"])
+    if start is None or end is None or start == end:
+        return True
+    moment = timezone.localtime(now or timezone.now()).time()
+    return start <= moment < end if start < end else (moment >= start or moment < end)
+
+
+def closed_message_for(current: dict, root) -> str:
+    """What a caller outside the answering hours hears: the saved message, or one built from the hours."""
+    saved = render(current["closed_message"] or "", root).strip()
+    return saved or (
+        f"Thank you for calling {root.name}. Our AI assistant answers calls from {spoken_time(current['answer_from'])} "
+        f"to {spoken_time(current['answer_until'])}. Please call the hospital during the day."
+    )
 
 
 def call_flags(root, for_web_call: bool = False) -> dict:
@@ -137,6 +201,10 @@ def session_config(current: dict) -> dict:
     return {
         "thinking_sound": bool(current["thinking_sound"]),
         "max_silence_seconds": int(current["max_silence_seconds"]),
+        "inactivity_timeout": int(current["inactivity_timeout"]),
+        "inactivity_message": current["inactivity_message"],
+        "inactivity_max_prompts": int(current["inactivity_max_prompts"]),
+        "inactivity_end_message": current["inactivity_end_message"],
         "background_sound": False,
         "vad_config": dict(preset),
     }
@@ -149,7 +217,7 @@ def resolve_call_settings(data: dict, current: dict | None = None) -> dict:
     base = {**CALL_DEFAULTS, **(current or {})}
     data = {**base, **{k: v for k, v in data.items() if k in CALL_DEFAULTS}}
     errors, out = {}, {}
-    for name in ("noise_cancellation", "recording_disclosure", "thinking_sound"):
+    for name in ("noise_cancellation", "recording_disclosure", "thinking_sound", "answer_hours_only"):
         value = data.get(name, CALL_DEFAULTS[name])
         if not isinstance(value, bool):
             errors[name] = "Must be on or off."
@@ -178,6 +246,36 @@ def resolve_call_settings(data: dict, current: dict | None = None) -> dict:
         if not SILENCE_RANGE[0] <= silence <= SILENCE_RANGE[1]:
             errors["max_silence_seconds"] = f"Between {SILENCE_RANGE[0]} and {SILENCE_RANGE[1]} seconds."
         out["max_silence_seconds"] = silence
+    for name, (low, high) in (("inactivity_timeout", INACTIVITY_TIMEOUT_RANGE), ("inactivity_max_prompts", INACTIVITY_PROMPTS_RANGE)):
+        try:
+            out[name] = int(data.get(name, CALL_DEFAULTS[name]))
+        except (TypeError, ValueError):
+            errors[name] = "Must be a whole number."
+        else:
+            if not low <= out[name] <= high:
+                errors[name] = f"Between {low} and {high}."
+    for name in ("inactivity_message", "inactivity_end_message"):
+        text = " ".join(str(data.get(name) or "").split())
+        if not text:
+            errors[name] = "Write what the receptionist should say."
+        elif len(text) > INACTIVITY_MESSAGE_MAX:
+            errors[name] = f"Keep it under {INACTIVITY_MESSAGE_MAX} characters."
+        out[name] = text
+    for name in ANSWER_TIME_FIELDS:
+        out[name] = _hhmm(data.get(name, CALL_DEFAULTS[name]))
+        if _clock(out[name]) is None:
+            errors[name] = "Choose a time."
+    if out["answer_hours_only"] and "answer_from" not in errors and out["answer_from"] == out["answer_until"]:
+        errors["answer_until"] = "Must differ from the start time (switch the hours off to answer all day)."
+    out["closed_message"] = " ".join(str(data.get("closed_message") or "").split())
+    if len(out["closed_message"]) > CLOSED_MESSAGE_MAX:
+        errors["closed_message"] = f"Keep it under {CLOSED_MESSAGE_MAX} characters."
+    if not errors:
+        # Each check-in and then the goodbye wait inactivity_timeout; all of it has to fit before the hard hang-up.
+        goodbye_at = out["inactivity_timeout"] * (out["inactivity_max_prompts"] + 1)
+        if goodbye_at >= out["max_silence_seconds"]:
+            errors["inactivity_timeout"] = (f"The goodbye would come at {goodbye_at} s, after the line is already hung up "
+                                            f"({out['max_silence_seconds']} s). Ask sooner, fewer times, or hang up later.")
     if errors:
         raise InvalidSettings(errors)
     return out
@@ -238,22 +336,42 @@ def resolve_stage(kind: str, data) -> dict:
     return {**{key: value for key, value in stage.items() if value != ""}, "config": config}
 
 
-def save_settings(root, data: dict) -> VoiceAgentSettings:
+MODEL_FIELDS = ("model_type", *DEFAULT_STAGES)
+
+
+def voice_stage(model_type: str) -> str:
+    """The stage that holds the voice callers hear."""
+    return "realtime" if model_type == VoiceAgentSettings.ModelType.REALTIME else "tts"
+
+
+def save_settings(root, data: dict, can_change_models: bool = True) -> VoiceAgentSettings:
     """Validate and store the settings for ``root``. Only the stages the chosen model type uses
-    are validated and replaced; the others keep what was saved before."""
+    are validated and replaced; the others keep what was saved before.
+
+    Without ``can_change_models`` (the hospital's own admins; only our team's staff logins choose models)
+    the models stay as they are and only the voice can change."""
     errors = {}
-    model_type = data.get("model_type", VoiceAgentSettings.ModelType.STANDARD)
-    if model_type not in VoiceAgentSettings.ModelType.values:
-        raise InvalidSettings({"model_type": "Choose standard or realtime."})
+    if can_change_models:
+        model_type = data.get("model_type", VoiceAgentSettings.ModelType.STANDARD)
+        if model_type not in VoiceAgentSettings.ModelType.values:
+            raise InvalidSettings({"model_type": "Choose standard or realtime."})
+        chosen = {kind: data.get(kind) for kind in STAGES_BY_MODEL_TYPE[model_type]}
+    else:
+        current = effective_settings(root)
+        model_type = current["model_type"]
+        kind = voice_stage(model_type)
+        sent = data.get(kind) if isinstance(data.get(kind), dict) else {}
+        stage = {key: value for key, value in current[kind].items() if key != "config"}
+        chosen = {kind: {**stage, "voice": str(sent.get("voice") or stage.get("voice") or "")}}
     first_message = str(data.get("first_message") or "").strip()
     system_prompt = str(data.get("system_prompt") or "").strip()
     if len(system_prompt) > max_system_prompt():
         errors["system_prompt"] = f"Keep the prompt under {max_system_prompt()} characters."
 
     stages = {}
-    for kind in STAGES_BY_MODEL_TYPE[model_type]:
+    for kind, choice in chosen.items():
         try:
-            stages[kind] = resolve_stage(kind, data.get(kind))
+            stages[kind] = resolve_stage(kind, choice)
         except InvalidSettings as exc:
             errors.update(exc.errors)
     saved = VoiceAgentSettings.objects.filter(clinic=root).first()
@@ -283,6 +401,8 @@ def settings_payload(root) -> dict:
     current = effective_settings(root)
     payload = {key: current[key] for key in ("first_message", "system_prompt", "model_type", "is_customised", *CALL_FIELDS)}
     payload["call_defaults"] = dict(CALL_DEFAULTS)
+    payload["closed_message_default"] = closed_message_for({**current, "closed_message": ""}, root)
+    payload["answering_now"] = answering_now(current)
     payload["listening_options"] = [{"id": key, "label": label} for key, label in LISTENING_LABELS.items()]
     payload["inbound_number"] = inbound.describe()
     for kind in DEFAULT_STAGES:

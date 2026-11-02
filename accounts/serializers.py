@@ -96,7 +96,9 @@ class UserMeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("id", "email", "full_name", "role", "membership_status", "is_clinic_admin", "is_doctor", "is_active", "is_verified", "clinic", "clinic_name", "doctor_profile_id", "clinic_plan", "clinic_is_onboarded", "age", "gender")
+        fields = ("id", "email", "full_name", "role", "membership_status", "is_clinic_admin", "is_doctor", "is_active", "is_verified", "clinic", "clinic_name", "doctor_profile_id", "clinic_plan", "clinic_is_onboarded", "age", "gender", "is_staff")
+        # Our own team's logins (they also choose the AI receptionist's models); set on the server, never here.
+        read_only_fields = ("is_staff",)
 
     def get_clinic_plan(self, obj):
         if obj.clinic_id:

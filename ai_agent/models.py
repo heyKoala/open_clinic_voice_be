@@ -1,3 +1,5 @@
+import datetime
+
 from django.contrib.postgres.indexes import GinIndex
 from django.contrib.postgres.search import SearchVectorField
 from django.db import models
@@ -100,6 +102,20 @@ class VoiceAgentSettings(TrackedModel):
     listening = models.CharField(max_length=16, choices=Listening.choices, default=Listening.BALANCED)
     # Hang up after this long without anyone speaking.
     max_silence_seconds = models.PositiveSmallIntegerField(default=60)
+    # Before that: after this many seconds of silence, say inactivity_message; up to inactivity_max_prompts times,
+    # then say inactivity_end_message and hang up.
+    inactivity_timeout = models.PositiveSmallIntegerField(default=10)
+    inactivity_message = models.CharField(max_length=200, default="Are you still there?")
+    inactivity_max_prompts = models.PositiveSmallIntegerField(default=2)
+    inactivity_end_message = models.CharField(
+        max_length=200, default="I'll end the call now since I haven't heard from you. Goodbye!")
+    # Calls to the hospital number answered only from answer_from to answer_until (may cross midnight, hospital
+    # time); outside them the caller hears closed_message (blank: one built from the hours) and the call ends.
+    # Off: answered at any hour, for when the hospital's own phone system decides which calls reach us.
+    answer_hours_only = models.BooleanField(default=False)
+    answer_from = models.TimeField(default=datetime.time(20, 0))
+    answer_until = models.TimeField(default=datetime.time(8, 0))
+    closed_message = models.CharField(max_length=300, blank=True)
     # A soft sound while the receptionist is working out its reply.
     thinking_sound = models.BooleanField(default=True)
 
