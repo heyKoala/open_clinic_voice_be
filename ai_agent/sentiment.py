@@ -92,7 +92,7 @@ def summarize_transcript(transcript: str) -> str:
         return ""
 
 
-CALLER_NAME_PROMPT = """You read the transcript of a phone call between a hospital's AI receptionist ("AI") and a caller ("Patient").
+CALLER_NAME_PROMPT = """You read what a caller ("Patient") said on a phone call to a hospital's AI receptionist.
 What is the caller's own name, as they said it on this call? Only the name of the person speaking: if they only
 gave the name of someone else (a family member they are calling for), or never said their name, answer "".
 Write the name in English letters, even if the call was in another language or script.
@@ -101,11 +101,15 @@ MAX_CALLER_NAME_CHARS = 60
 
 
 def caller_name_from_transcript(transcript: str) -> str:
-    """The caller's own name from the transcript, or '' when unsaid, off, or the model fails."""
-    if not is_enabled() or not (transcript or "").strip():
+    """The caller's own name from the transcript, or '' when unsaid, off, or the model fails.
+
+    Only the caller's lines are read: the agent's greeting welcomes returning callers by name, and reading it
+    would save that name again on every call, even a wrong one."""
+    said = _caller_lines(transcript or "")
+    if not is_enabled() or not said.strip():
         return ""
     try:
-        content = _chat(CALLER_NAME_PROMPT, transcript[-MAX_TRANSCRIPT_CHARS:])
+        content = _chat(CALLER_NAME_PROMPT, said[-MAX_TRANSCRIPT_CHARS:])
         start, end = content.find("{"), content.rfind("}")
         name = json.loads(content[start:end + 1]).get("name") if start >= 0 and end > start else ""
         name = " ".join(str(name or "").split())

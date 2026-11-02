@@ -241,7 +241,7 @@ class TestDoctorFilterAndExport:
         appts = [Appointment.objects.create(clinic=clinic, patient=patient, doctor=d, starts_at=now, ends_at=now) for d in doctors]
         CallLog.objects.create(clinic=clinic, patient=patient, direction="inbound", occurred_at=now, outcome="appointment_booked", appointment=appts[0], duration_seconds=60)
         CallLog.objects.create(clinic=clinic, patient=patient, direction="inbound", occurred_at=now, outcome="appointment_cancelled", appointment=appts[1], duration_seconds=30)
-        CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="information_only")
+        CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="information_only", duration_seconds=20)
         return doctors
 
     def test_doctor_filter(self, admin_client, clinic):

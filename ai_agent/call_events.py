@@ -83,6 +83,12 @@ def _as_int(value, default=0):
         return default
 
 
+def caller_spoke(transcript) -> bool:
+    """Whether the formatted transcript has a line from the caller. With only the agent's greeting there is
+    nothing to summarise, rate or read a name from: the model would make it up."""
+    return any(line.startswith("Patient:") for line in (transcript or "").splitlines())
+
+
 def is_placeholder_summary(summary) -> bool:
     """True for no summary, or the one written at call start before anything was known."""
     text = (summary or "").strip()
@@ -115,17 +121,20 @@ def match_patient(clinic, *phones):
 def recognised_caller(clinic, phone) -> str:
     """The name to greet a caller from this number by ('' for a first-time or unknown caller).
 
-    The name the caller gave on their latest earlier call comes first: it is who actually speaks from this
-    phone, whereas the patient record may be a family member booked under it. Otherwise the patient record."""
+    The registered patient for this number comes first: the hospital entered that name, whereas a name read from
+    a call transcript can be misheard. Otherwise the name the caller gave on their latest earlier call. (If someone
+    else is calling from a patient's phone, the agent is told to apologise and carry on.)"""
     wanted = _digits(phone)[-10:]
     if len(wanted) < 7:
         return ""
+    patient = match_patient(clinic, phone)
+    if patient:
+        return patient.full_name
     for name, stored in (CallLog.objects.filter(clinic__in=clinic.group_clinics(), is_test=False, phone__endswith=wanted[-4:])
                          .exclude(caller_name="").order_by("-occurred_at").values_list("caller_name", "phone")[:20]):
         if _digits(stored).endswith(wanted):
             return name
-    patient = match_patient(clinic, phone)
-    return patient.full_name if patient else ""
+    return ""
 
 
 def _timed_turns(text: str) -> list[tuple[int, str, str]]:
@@ -187,8 +196,8 @@ def classify_outcome(raw_transcript, transcript: str) -> str | None:
         return "appointment_booked"
     if cancelled:
         return "appointment_cancelled"
-    if not any(line.startswith("Patient:") for line in (transcript or "").splitlines()):
-        return ""  # the caller never spoke
+    if not caller_spoke(transcript):
+        return ""
     return classify_transcript(transcript)
 
 
@@ -320,6 +329,14 @@ def _record_provider_event(clinic, data: dict) -> CallLog | None:
             updates["sentiment"] = normalize_sentiment(analysis.get("sentiment"))
     if media.get("recording_url"):
         updates["recording_url"] = str(media["recording_url"])[:1000]
+    # The transcript may already be in (it is fetched separately): if the caller never spoke, the provider's
+    # summary and sentiment were made up from the greeting alone.
+    if external_id and ("summary" in updates or "sentiment" in updates):
+        known = (CallLog.objects.filter(clinic__in=clinic.group_clinics(), external_call_id=external_id)
+                 .values_list("transcript", flat=True).first())
+        if known and not caller_spoke(known):
+            updates.pop("summary", None)
+            updates.pop("sentiment", None)
 
     log = _upsert(clinic, external_id, defaults, updates)
 
@@ -340,6 +357,8 @@ def _record_legacy_event(clinic, data: dict) -> CallLog:
         "recording_url": str(data.get("recordingURL") or data.get("recording_url") or "")[:1000],
         "summary": str(data.get("callSummary") or data.get("summary") or ""),
     }
+    if updates["transcript"] and not caller_spoke(updates["transcript"]):
+        updates["summary"] = ""
     defaults = {
         "direction": direction,
         "agent_name": "ManageOPD AI",
@@ -418,13 +437,21 @@ def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str
             appointment_id = _handled_appointment_id(log, payload)
             if appointment_id:
                 updates["appointment_id"] = appointment_id
+        spoke = caller_spoke(transcript)
+        # The caller never spoke (silent, or hung up at the greeting): a summary or sentiment the provider
+        # sent was made up from the greeting alone.
+        if transcript and not spoke:
+            if not is_placeholder_summary(log.summary):
+                updates["summary"] = ""
+            if log.sentiment:
+                updates["sentiment"] = ""
         # No sentiment from the provider's analysis (e.g. calls on the clinic number): rate the transcript.
-        if not log.sentiment and transcript:
+        if not log.sentiment and spoke:
             sentiment = rate_transcript(transcript)
             if sentiment:
                 updates["sentiment"] = sentiment
         # No summary from the provider either: only the call-start placeholder ("Call from +91…"). Write one.
-        if transcript and is_placeholder_summary(log.summary):
+        if spoke and is_placeholder_summary(log.summary):
             summary = summarize_transcript(transcript)
             if summary:
                 updates["summary"] = summary
@@ -434,7 +461,7 @@ def fetch_media(call_log_id: int, transcript_url: str | None, recording_url: str
             if language and language != log.language:
                 updates["language"] = language
         # Who called, so the agent can greet them by name next time (see recognised_caller).
-        if transcript and log.direction == CallLog.Direction.INBOUND and not log.is_test and not log.caller_name:
+        if spoke and log.direction == CallLog.Direction.INBOUND and not log.is_test and not log.caller_name:
             caller_name = caller_name_from_transcript(transcript)
             if caller_name:
                 updates["caller_name"] = caller_name

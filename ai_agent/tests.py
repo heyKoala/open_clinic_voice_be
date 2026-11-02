@@ -45,7 +45,7 @@ class TestCallLogAccess:
         from django.utils import timezone
         from ai_agent.models import CallLog
 
-        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="booked")
+        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="booked", duration_seconds=60)
 
         res = receptionist_client.get("/api/v1/ai/call-logs/")
         assert res.status_code == status.HTTP_200_OK

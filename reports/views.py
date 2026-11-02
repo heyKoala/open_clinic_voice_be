@@ -26,7 +26,7 @@ from audit.models import AuthEvent
 from appointments.models import Appointment
 from followups.models import FollowUp
 from queue_mgmt.models import QueueToken
-from ai_agent.models import CallLog
+from ai_agent.models import EMPTY_CALL, CallLog
 from doctors.models import Doctor
 from common.api import ClinicScopedModelViewSet
 from common.audit import log_data_change
@@ -81,10 +81,11 @@ def _analytics_calls(request, since, until):
     """The calls the AI analytics cover, and how many test calls the period had.
 
     Filters: period, ?direction, ?language, ?doctor (calls that booked or cancelled with that doctor).
-    Staff test calls aren't patients calling: left out unless ?include_tests=1.
+    Staff test calls aren't patients calling: left out unless ?include_tests=1. Empty calls (see EMPTY_CALL)
+    are left out, as in the call logs.
     """
     # The phone line is shared by every centre, so calls are counted hospital-wide whichever centre is selected.
-    calls = CallLog.objects.filter(clinic__in=request.clinic.root.group_clinics(), occurred_at__gte=since)
+    calls = CallLog.objects.filter(clinic__in=request.clinic.root.group_clinics(), occurred_at__gte=since).exclude(EMPTY_CALL)
     if until:
         calls = calls.filter(occurred_at__lte=until)
     for field in ("direction", "language"):

@@ -12,7 +12,7 @@ from ai_agent import inbound
 from ai_agent.agent_settings import (
     InvalidSettings, call_flags, effective_settings, provider_config, render, save_settings, session_config, settings_payload,
 )
-from ai_agent.models import AgentConfiguration, CallLog, VoiceAgentSettings
+from ai_agent.models import EMPTY_CALL, AgentConfiguration, CallLog, VoiceAgentSettings
 from ai_agent.serializers import AgentConfigurationSerializer, CallLogSerializer
 from common.api import ClinicScopedModelViewSet
 from accounts.permissions import IsClinicAdmin, IsAdminOrDoctor, IsAdminDoctorOrReceptionist
@@ -332,7 +332,7 @@ class CallLogViewSet(ClinicScopedModelViewSet):
 
     def get_queryset(self):
         # Calls come in on the hospital's shared line: every centre's staff see all of them.
-        return self.queryset.filter(clinic__in=self.request.clinic.root.group_clinics())
+        return self.queryset.filter(clinic__in=self.request.clinic.root.group_clinics()).exclude(EMPTY_CALL)
     search_fields = ["agent_name", "outcome", "transcript"]
     ordering_fields = ["occurred_at", "duration_seconds", "created_at"]
     pagination_class = StandardResultsSetPagination

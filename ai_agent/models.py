@@ -54,6 +54,15 @@ class CallLog(ClinicScopedModel):
         )]
 
 
+# A call with nothing in it: no length, no transcript and no recording (the line dropped before anything
+# happened). Left out of the call logs and the call analytics. Calls still in progress, and missed calls
+# (the front desk calls those back), are kept.
+EMPTY_CALL = (
+    models.Q(duration_seconds=0, transcript="", recording_url="", recording_file="")
+    & ~models.Q(outcome__in=("in_progress", "unanswered"))
+)
+
+
 class VoiceAgentSettings(TrackedModel):
     """How the AI receptionist sounds and thinks. Owned by a main clinic and shared by its centres
     (they share one phone number). No row means the built-in defaults."""

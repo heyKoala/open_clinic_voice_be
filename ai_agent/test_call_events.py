@@ -303,8 +303,8 @@ class TestTestCalls:
     def test_tests_are_filterable_and_left_out_of_analytics(self, admin_client, clinic):
         from django.utils import timezone
         now = timezone.now()
-        real = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="appointment_booked")
-        test = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="appointment_booked", is_test=True)
+        real = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="appointment_booked", duration_seconds=60)
+        test = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="appointment_booked", duration_seconds=60, is_test=True)
 
         listed = lambda q: [r["id"] for r in admin_client.get(f"/api/v1/ai/call-logs/{q}").data["results"]]
         assert listed("?is_test=false") == [real.id]
@@ -412,6 +412,81 @@ class TestSummary:
         assert not summarise.called
         assert CallLog.objects.get(id=log.id).summary == "Provider summary."
 
+    GREETING_ONLY = "AI: Welcome to Gunasheela. Nice to hear from you again, Jason. How can I help you today?"
+
+    def test_nothing_is_made_up_when_the_caller_never_spoke(self, clinic):
+        from django.utils import timezone
+        from ai_agent.call_events import fetch_media
+        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="in_progress",
+                                     external_call_id="sum-3", summary="Call from +919876543210.")
+        with mock.patch("ai_agent.call_events.requests.get", side_effect=self._transcript(self.GREETING_ONLY)), \
+             mock.patch("ai_agent.call_events.summarize_transcript") as summarise, \
+             mock.patch("ai_agent.call_events.rate_transcript") as rate, \
+             mock.patch("ai_agent.call_events.caller_name_from_transcript") as name:
+            fetch_media(log.id, "https://cdn.example/transcript.txt", None)
+        assert not (summarise.called or rate.called or name.called)
+        log.refresh_from_db()
+        assert (log.summary, log.sentiment, log.caller_name) == ("Call from +919876543210.", "", "")
+
+    def test_a_providers_summary_of_a_silent_call_is_dropped(self, clinic):
+        from django.utils import timezone
+        from ai_agent.call_events import fetch_media
+        log = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), outcome="in_progress",
+                                     external_call_id="sum-4", summary="Jason called about his knee injury.", sentiment="neutral")
+        with mock.patch("ai_agent.call_events.requests.get", side_effect=self._transcript(self.GREETING_ONLY)):
+            fetch_media(log.id, "https://cdn.example/transcript.txt", None)
+        log.refresh_from_db()
+        assert (log.summary, log.sentiment) == ("", "")
+
+    def test_a_late_analysis_of_a_silent_call_is_ignored(self, api_client, clinic, django_capture_on_commit_callbacks):
+        from django.utils import timezone
+        CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=timezone.now(), external_call_id=CALL_ID,
+                               transcript=self.GREETING_ONLY)
+        payload = _event("call.analysis_completed", analysis={"summary": "Jason called about his knee injury.", "sentiment": "neutral"})
+        _post(api_client, clinic, payload, django_capture_on_commit_callbacks)
+        log = CallLog.objects.get(external_call_id=CALL_ID)
+        assert (log.summary, log.sentiment, log.duration_seconds) == ("", "", 97)
+
+    def test_cleanup_command_clears_only_made_up_details(self, clinic):
+        from django.core.management import call_command
+        from django.utils import timezone
+        make = lambda transcript, **fields: CallLog.objects.create(
+            clinic=clinic, direction="inbound", occurred_at=timezone.now(), transcript=transcript, **fields)
+        silent = make(self.GREETING_ONLY, summary="Jason called about his knee injury.", sentiment="neutral", caller_name="Jason")
+        echoed = make(f"{self.GREETING_ONLY}\nPatient: Book me with Dr. Devika.",
+                      summary="Booked Dr. Devika.", sentiment="positive", caller_name="Jason")
+        said = make(f"{self.GREETING_ONLY}\nPatient: No, this is Shreya. Book me with Dr. Devika.",
+                    summary="Booked Dr. Devika.", sentiment="positive", caller_name="Shreya")
+
+        call_command("clean_made_up_call_details", "--dry-run", stdout=mock.Mock())
+        assert CallLog.objects.get(id=silent.id).summary == "Jason called about his knee injury."
+        call_command("clean_made_up_call_details", stdout=mock.Mock())
+        for log in (silent, echoed, said):
+            log.refresh_from_db()
+        assert (silent.summary, silent.sentiment, silent.caller_name) == ("", "", "")
+        assert (echoed.summary, echoed.sentiment, echoed.caller_name) == ("Booked Dr. Devika.", "positive", "")
+        assert (said.summary, said.sentiment, said.caller_name) == ("Booked Dr. Devika.", "positive", "Shreya")
+
+
+class TestEmptyCalls:
+    """A call with no length, transcript or recording is left out of the call logs and the analytics."""
+
+    def test_empty_calls_are_hidden_and_not_counted(self, admin_client, clinic):
+        from django.utils import timezone
+        now = timezone.now()
+        empty = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="no_recording")
+        silent = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, recording_url="https://cdn.example/rec.mp3")
+        talked = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, duration_seconds=45)
+        live = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="in_progress")
+        missed = CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, outcome="unanswered")
+
+        listed = {r["id"] for r in admin_client.get("/api/v1/ai/call-logs/").data["results"]}
+        assert listed == {silent.id, talked.id, live.id, missed.id}
+        assert admin_client.get(f"/api/v1/ai/call-logs/{empty.id}/").status_code == status.HTTP_404_NOT_FOUND
+
+        today = timezone.localdate().isoformat()
+        assert admin_client.get(f"/api/v1/reports/ai-analytics/?start={today}").data["summary"]["total_calls"] == 4
+
 
 class TestSentiment:
     """Caller sentiment: from the provider's analysis when sent, else rated from the transcript (if enabled)."""
@@ -475,7 +550,7 @@ class TestSentiment:
         from django.utils import timezone
         now = timezone.now()
         for sentiment in ("positive", "positive", "negative", ""):
-            CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, sentiment=sentiment)
+            CallLog.objects.create(clinic=clinic, direction="inbound", occurred_at=now, sentiment=sentiment, duration_seconds=60)
         assert len(admin_client.get("/api/v1/ai/call-logs/?sentiment=positive").data["results"]) == 2
         assert len(admin_client.get("/api/v1/ai/call-logs/?sentiment=none").data["results"]) == 1
         today = timezone.localdate().isoformat()
@@ -594,8 +669,8 @@ class TestClassifier:
 
 
 class TestReturningCaller:
-    """A caller who rang before is welcomed back by name: from the name they gave on an earlier call,
-    or else from the patient record for their number."""
+    """A caller who rang before is welcomed back by name: from the patient record for their number, or else
+    from the name they gave on an earlier call."""
 
     def _start(self, client, clinic, capture, phone="+919876543210", room="room-r1"):
         with mock.patch("ai_agent.call_sessions.enqueue_recording_fetch"):
@@ -618,11 +693,12 @@ class TestReturningCaller:
         assert res.data["first_message"] == "Welcome to Test Clinic. Nice to hear from you again, Srikanth. How can I help you today?"
         assert "called before as Srikanth" in res.data["system_prompt"]
 
-    def test_the_callers_own_name_beats_a_family_members_record(self, api_client, clinic, django_capture_on_commit_callbacks):
-        Patient.objects.create(clinic=clinic, full_name="Priya Rao", phone="+91 98765 43210")  # booked by her mother
-        self._earlier_call(clinic, caller_name="Lakshmi Rao")
+    def test_the_registered_patient_beats_a_name_heard_on_a_call(self, api_client, clinic, django_capture_on_commit_callbacks):
+        Patient.objects.create(clinic=clinic, full_name="Shreya Joseph", phone="+91 98765 43210")
+        self._earlier_call(clinic, caller_name="Jason")  # misheard, or read from an earlier greeting
         res = self._start(api_client, clinic, django_capture_on_commit_callbacks)
-        assert "again, Lakshmi." in res.data["first_message"]
+        assert "again, Shreya." in res.data["first_message"]
+        assert "Jason" not in res.data["system_prompt"]
 
     def test_patient_record_is_used_when_no_name_was_heard(self, api_client, clinic, django_capture_on_commit_callbacks):
         Patient.objects.create(clinic=clinic, full_name="K. Srikanth Rao", phone="9876543210")
@@ -668,6 +744,16 @@ class TestReturningCaller:
                 assert caller_name_from_transcript("AI: Hi\nPatient: I'm Srikanth.") == expected
         settings.SENTIMENT_API_KEY = ""
         assert caller_name_from_transcript("AI: Hi\nPatient: I'm Srikanth.") == ""
+
+    def test_only_the_callers_lines_are_read_for_the_name(self, settings):
+        from ai_agent.sentiment import caller_name_from_transcript
+        settings.SENTIMENT_API_KEY = "k"
+        with mock.patch("ai_agent.sentiment._chat", return_value='{"name": ""}') as chat:
+            caller_name_from_transcript("AI: Nice to hear from you again, Jason.\nPatient: I need the OPD timings.")
+            assert chat.call_args.args[1] == "Patient: I need the OPD timings."
+            chat.reset_mock()
+            assert caller_name_from_transcript("AI: Nice to hear from you again, Jason.") == ""
+            assert not chat.called
 
 
 class TestCallLanguage:
