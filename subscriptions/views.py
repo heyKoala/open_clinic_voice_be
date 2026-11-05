@@ -13,6 +13,7 @@ from accounts.permissions import IsClinicAdmin
 from accounts.services import get_or_create_clinic_entitlement, log_auth_event
 from audit.models import AuthEvent
 from common.audit import log_data_change
+from subscriptions.billing import clinic_billing_summary
 from subscriptions.models import ClinicEntitlement, SubscriptionPlan
 import razorpay
 from django.conf import settings
@@ -55,6 +56,7 @@ class SubscriptionSummaryView(APIView):
 					}
 					for plan_value, _ in SubscriptionPlan.PlanType.choices
 				],
+				"billing": clinic_billing_summary(clinic),
 			}
 		)
 

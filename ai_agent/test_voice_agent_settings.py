@@ -315,8 +315,8 @@ def test_saved_call_audio_changes_the_call_config_and_is_pushed_to_the_number(ad
     assert res.status_code == 200, res.data
     assert res.data["inbound_applied"] == {"ok": True, "detail": "Applied to calls on the hospital number."}
     assert put.call_args.args[0] == "https://worker.example.com/inbound/update"
-    assert put.call_args.kwargs["json"] == {"sip_trunk_id": "ST_in", "dispatch_rule_id": "SDR_in", "noise_cancellation": True,
-                                            "noise_cancellation_level": 20, "recording_disclosure": True}
+    # Only the recording notice goes to the number; noise cancellation there is managed through the worker's API.
+    assert put.call_args.kwargs["json"] == {"sip_trunk_id": "ST_in", "dispatch_rule_id": "SDR_in", "recording_disclosure": True}
 
     config = _call_config(api_client, clinic)
     assert (config["max_silence_seconds"], config["thinking_sound"]) == (45, False)
@@ -330,13 +330,13 @@ def test_saved_call_audio_changes_the_call_config_and_is_pushed_to_the_number(ad
 
 def test_noise_cancellation_off_drops_the_level_and_warns_without_inbound_ids(admin_client, clinic, settings):
     settings.ROCK8_INBOUND_TRUNK_ID = settings.ROCK8_INBOUND_RULE_ID = ""
-    body = {**STANDARD, "noise_cancellation": False, "noise_cancellation_level": 40}
+    body = {**STANDARD, "noise_cancellation": False, "noise_cancellation_level": 40, "recording_disclosure": True}
     with mock.patch("ai_agent.inbound.requests.put") as put:
         res = admin_client.put(URL, data=json.dumps(body), content_type="application/json")
     assert res.status_code == 200 and not put.called
     assert res.data["inbound_applied"]["ok"] is False and "ROCK8_INBOUND_TRUNK_ID" in res.data["inbound_applied"]["detail"]
     from ai_agent.agent_settings import call_flags
-    assert call_flags(clinic) == {"noise_cancellation": False, "recording_disclosure": False}
+    assert call_flags(clinic) == {"noise_cancellation": False, "recording_disclosure": True}
     assert call_flags(clinic, for_web_call=True) == {"noise_cancellation": False}
 
 
@@ -388,3 +388,11 @@ def test_instructions_limit_is_a_setting_and_is_shown_on_the_page(admin_client, 
 def test_greeting_has_no_length_limit(admin_client, clinic):
     res = admin_client.put(URL, {**STANDARD, "first_message": "Welcome to {clinic_name}. " * 100}, format="json")
     assert res.status_code == 200
+
+
+def test_noise_settings_alone_never_touch_the_hospital_number(admin_client, clinic, settings):
+    settings.ROCK8_API_KEY, settings.ROCK8_INBOUND_TRUNK_ID, settings.ROCK8_INBOUND_RULE_ID = "k", "ST_in", "SDR_in"
+    body = {**STANDARD, "noise_cancellation": False, "noise_cancellation_level": 40}
+    with mock.patch("ai_agent.inbound.requests.put") as put:
+        res = admin_client.put(URL, data=json.dumps(body), content_type="application/json")
+    assert res.status_code == 200 and "inbound_applied" not in res.data and not put.called

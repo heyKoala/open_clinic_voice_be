@@ -311,3 +311,30 @@ class TestPasswordReset:
         }, format="json")
         assert res.status_code == status.HTTP_400_BAD_REQUEST
         assert "token" in res.data
+
+
+# ---------------------------------------------------------------------------
+# Hospital icon: follows the clinic the user belongs to, not the email address
+# ---------------------------------------------------------------------------
+
+class TestClinicLogo:
+    def test_me_returns_the_clinics_logo(self, admin_client, clinic):
+        clinic.logo_url = "/gunasheela_mark.png"
+        clinic.save(update_fields=["logo_url"])
+        assert admin_client.get(ME_URL).data["clinic_logo_url"] == "/gunasheela_mark.png"
+
+    def test_a_clinic_without_a_logo_returns_blank(self, admin_client):
+        assert admin_client.get(ME_URL).data["clinic_logo_url"] == ""
+
+    def test_a_centre_shows_its_main_clinics_logo(self, clinic):
+        from clinics.models import Clinic
+        from accounts.serializers import UserMeSerializer
+
+        clinic.logo_url = "/main.png"
+        clinic.save(update_fields=["logo_url"])
+        centre = Clinic.objects.create(name="Centre", parent=clinic)
+        user = User.objects.create_user(
+            clinic=centre, email="c@example.com", full_name="C", password="Pass12345!",
+            role=User.Role.CLINIC_ADMIN, membership_status=User.MembershipStatus.ACTIVE, is_verified=True,
+        )
+        assert UserMeSerializer(user).data["clinic_logo_url"] == "/main.png"

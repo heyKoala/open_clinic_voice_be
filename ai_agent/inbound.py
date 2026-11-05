@@ -1,8 +1,9 @@
 """The hospital's phone number on the voice worker.
 
-Noise cancellation and the recording notice for calls *to* the hospital live on the number's inbound
-dispatch rule at the worker, not in the per-call config, so when those settings change they are pushed
-with ``PUT /inbound/update``. The rule's ids come from registering the number (ROCK8_INBOUND_TRUNK_ID and
+The recording notice for calls *to* the hospital lives on the number's inbound dispatch rule at the
+worker, not in the per-call config, so when it changes it is pushed with ``PUT /inbound/update``. Noise
+cancellation (provider, strength) is set on the number directly through the same endpoint and is not
+touched from here. The rule's ids come from registering the number (ROCK8_INBOUND_TRUNK_ID and
 ROCK8_INBOUND_RULE_ID in .env; see backups/voice_inbound_*.json).
 """
 from __future__ import annotations

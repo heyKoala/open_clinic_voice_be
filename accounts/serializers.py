@@ -89,6 +89,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
 class UserMeSerializer(serializers.ModelSerializer):
     clinic_name = serializers.SerializerMethodField()
+    clinic_logo_url = serializers.SerializerMethodField()
     doctor_profile_id = serializers.SerializerMethodField()
     clinic_plan = serializers.SerializerMethodField()
     clinic_is_onboarded = serializers.SerializerMethodField()
@@ -96,7 +97,7 @@ class UserMeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("id", "email", "full_name", "role", "membership_status", "is_clinic_admin", "is_doctor", "is_active", "is_verified", "clinic", "clinic_name", "doctor_profile_id", "clinic_plan", "clinic_is_onboarded", "age", "gender", "is_staff")
+        fields = ("id", "email", "full_name", "role", "membership_status", "is_clinic_admin", "is_doctor", "is_active", "is_verified", "clinic", "clinic_name", "clinic_logo_url", "doctor_profile_id", "clinic_plan", "clinic_is_onboarded", "age", "gender", "is_staff")
         # Our own team's logins (they also choose the AI receptionist's models); set on the server, never here.
         read_only_fields = ("is_staff",)
 
@@ -113,6 +114,12 @@ class UserMeSerializer(serializers.ModelSerializer):
         if request and getattr(request, 'clinic', None):
             return request.clinic.name
         return obj.clinic.name if obj.clinic else None
+
+    def get_clinic_logo_url(self, obj):
+        # The hospital's icon: the main clinic's, which its centres share.
+        request = self.context.get('request')
+        clinic = getattr(request, 'clinic', None) or obj.clinic
+        return clinic.root.logo_url if clinic else ''
 
     def get_clinic_is_onboarded(self, obj):
         request = self.context.get('request')

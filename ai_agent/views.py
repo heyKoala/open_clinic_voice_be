@@ -10,7 +10,7 @@ from rest_framework.pagination import PageNumberPagination
 from ai_agent import providers
 from ai_agent import inbound
 from ai_agent.agent_settings import (
-    MODEL_FIELDS, InvalidSettings, answering_now, call_flags, closed_message_for, effective_settings, provider_config, render, save_settings,
+    MODEL_FIELDS, InvalidSettings, answering_now, call_flags, closed_message_for, inbound_flags, effective_settings, provider_config, render, save_settings,
     session_config, settings_payload,
 )
 from ai_agent.models import EMPTY_CALL, AgentConfiguration, CallLog, VoiceAgentSettings
@@ -474,7 +474,7 @@ class VoiceAgentSettingsView(APIView):
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
-        before = call_flags(root)
+        before = inbound_flags(root)
         try:
             save_settings(root, request.data if isinstance(request.data, dict) else {},
                           can_change_models=request.user.is_staff)
@@ -483,7 +483,7 @@ class VoiceAgentSettingsView(APIView):
         except providers.ProviderError as exc:
             return _catalog_error(exc)
         payload = _settings_payload(root, request)
-        after = call_flags(root)
+        after = inbound_flags(root)
         if after != before:
             payload["inbound_applied"] = inbound.apply_call_flags(after)
         return Response(payload)
@@ -493,14 +493,14 @@ class VoiceAgentSettingsView(APIView):
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
-        before = call_flags(root)
+        before = inbound_flags(root)
         saved = VoiceAgentSettings.objects.filter(clinic=root).first()
         kept = {name: getattr(saved, name) for name in MODEL_FIELDS} if saved and not request.user.is_staff else None
         VoiceAgentSettings.objects.filter(clinic=root).delete()
         if kept:
             VoiceAgentSettings.objects.create(clinic=root, **kept)
         payload = _settings_payload(root, request)
-        after = call_flags(root)
+        after = inbound_flags(root)
         if after != before:
             payload["inbound_applied"] = inbound.apply_call_flags(after)
         return Response(payload)

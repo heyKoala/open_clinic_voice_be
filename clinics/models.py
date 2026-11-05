@@ -50,6 +50,10 @@ class Clinic(TrackedModel):
 	# Onboarding State
 	is_onboarded = models.BooleanField(default=False)
 
+	# The hospital's icon, shown beside its name in the app (a path the front end serves, or a full URL).
+	# Blank shows a plain building icon. Set on the main clinic; its centres show the same one.
+	logo_url = models.CharField(max_length=500, blank=True)
+
 	# A centre (branch) points at its main clinic; the main clinic has no parent. Centres of one
 	# clinic share the main clinic's phone number and AI receptionist.
 	parent = models.ForeignKey(

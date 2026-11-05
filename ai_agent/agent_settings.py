@@ -195,6 +195,12 @@ def call_flags(root, for_web_call: bool = False) -> dict:
     return flags
 
 
+def inbound_flags(root) -> dict:
+    """What the app keeps on the hospital number's inbound rule. Noise cancellation (provider, strength, on/off)
+    is set on the number itself through the worker's API, so it is left out: the app must never overwrite it."""
+    return {"recording_disclosure": bool(effective_settings(root)["recording_disclosure"])}
+
+
 def session_config(current: dict) -> dict:
     """The listening/sound part of the config reply, from ``effective_settings``."""
     preset = LISTENING_PRESETS.get(current["listening"], LISTENING_PRESETS[VoiceAgentSettings.Listening.BALANCED])
