@@ -93,6 +93,7 @@ def disable_throttling(settings):
             "login": high_rate,
             "invite": high_rate,
             "password_reset": high_rate,
+            "leads": high_rate,
         },
     }
 

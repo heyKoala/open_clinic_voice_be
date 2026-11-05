@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "accounts",
     "audit",
     "subscriptions",
+    "leads",
     "reports",
     "patients",
     "doctors",
@@ -234,6 +235,7 @@ REST_FRAMEWORK = {
         "login": "30/hour",
         "invite": "20/hour",
         "password_reset": "30/hour",
+        "leads": "10/hour",
     },
 }
 
@@ -299,6 +301,8 @@ EMAIL_HOST_USER = get_secret("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = get_secret("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = get_secret("EMAIL_USE_TLS", True, cast=bool)
 DEFAULT_FROM_EMAIL = get_secret("DEFAULT_FROM_EMAIL", "noreply@manageopd.local")
+# Where "Talk to us" enquiries from the Slot website are emailed.
+LEAD_NOTIFY_EMAIL = get_secret("LEAD_NOTIFY_EMAIL", "info@heykoala.ai")
 
 # Feature flags
 # NOTE: ENABLE_SRS_V03_AI_FIRST is reserved for a future AI-first pre-screening intake flow
