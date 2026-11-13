@@ -18,6 +18,7 @@ from accounts.models import EmailVerificationToken, Invitation, PasswordResetTok
 from accounts.utils import generate_raw_token, token_hash
 from audit.models import AuthEvent
 from clinics.models import Clinic
+from clinics.status import SUSPENDED_MESSAGE
 from doctors.models import Doctor
 from subscriptions.models import ClinicEntitlement, SubscriptionPlan
 
@@ -189,6 +190,12 @@ def _lock_duration(attempts: int) -> timedelta:
     return timedelta(minutes=minutes)
 
 
+def ensure_hospital_active(user: User) -> None:
+    """A suspended or archived hospital's people can't sign in. HeyKoala's own staff can, to put it right."""
+    if user.clinic_id and not user.is_staff and user.clinic.is_blocked:
+        raise AuthenticationFailed(SUSPENDED_MESSAGE)
+
+
 def login_user(email: str, password: str) -> User:
     user_qs = User.objects.filter(email__iexact=email)
     user = user_qs.first()
@@ -205,6 +212,7 @@ def login_user(email: str, password: str) -> User:
             user.save(update_fields=["failed_login_attempts", "lock_until", "updated_at"])
         raise AuthenticationFailed("Invalid credentials.")
 
+    ensure_hospital_active(authenticated)
     authenticated.failed_login_attempts = 0
     authenticated.lock_until = None
     authenticated.save(update_fields=["failed_login_attempts", "lock_until", "updated_at"])
@@ -227,6 +235,7 @@ def rotate_refresh_token(raw_refresh: str):
         raise AuthenticationFailed("User no longer exists.") from exc
     if not user.is_active:
         raise AuthenticationFailed("User account is disabled.")
+    ensure_hospital_active(user)
     try:
         refresh.blacklist()
     except Exception:

@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     "ai_agent",
     "followups",
     "clinical",
+    "platform_admin",
 ]
 
 MIDDLEWARE = [

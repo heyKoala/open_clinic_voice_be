@@ -22,6 +22,25 @@ from clinics.models import Clinic, PaymentTransaction
 logger = logging.getLogger(__name__)
 
 
+class CreditBalanceView(APIView):
+	"""The hospital's remaining call credits, for its admin to see (HeyKoala's team adds them; nothing here changes them)."""
+	permission_classes = [IsClinicAdmin]
+
+	def get(self, request):
+		from platform_admin import credits
+
+		root = request.clinic.root
+		account = credits.peek_account(root)  # reading never creates the account
+		balance = account.balance if account else 0
+		rate = credits.rate_for(root)
+		return Response({
+			"balance": balance,
+			"credits_per_minute": rate,
+			"low_balance_threshold": account.low_balance_threshold if account else credits.DEFAULT_LOW_BALANCE,
+			"minutes_left": credits.minutes_left(balance, rate),
+		})
+
+
 class SubscriptionSummaryView(APIView):
 	permission_classes = [IsClinicAdmin]
 

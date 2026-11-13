@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from clinics import plivo
 from clinics.models import Clinic, ClinicConfiguration, ClinicIntegration, ClinicPhoneNumber, PaymentTransaction
 from clinics.permissions import IsClinicAdmin
+from clinics.status import PHONE_LOCKED_MESSAGE
 from clinics.serializers import ClinicSerializer, ClinicConfigurationSerializer, ClinicHolidaySerializer
 from clinics.models import ClinicHoliday
 from accounts.services import get_or_create_clinic_entitlement
@@ -221,6 +222,13 @@ class CompleteOnboardingView(APIView):
 NOT_OWNER = {"detail": "Only the main clinic's admins can manage its phone number."}
 
 
+def _platform_only(request):
+    """Buying or releasing a number is real money, and a wrong change stops calls: only HeyKoala's staff do it."""
+    if request.user.is_staff:
+        return None
+    return Response({"detail": PHONE_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+
+
 def _owned_root(request):
     """The main clinic of the active clinic, if this admin belongs to it (else None)."""
     clinic = request.clinic
@@ -277,9 +285,14 @@ class PhoneNumberView(APIView):
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
-        return Response(_phone_number_payload(root))
+        payload = _phone_number_payload(root)
+        payload["can_purchase"] = payload["can_purchase"] and request.user.is_staff
+        return Response(payload)
 
     def post(self, request):
+        locked = _platform_only(request)
+        if locked:
+            return locked
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
@@ -325,6 +338,9 @@ class PhoneNumberView(APIView):
         return Response(_phone_number_payload(root), status=status.HTTP_201_CREATED)
 
     def delete(self, request):
+        locked = _platform_only(request)
+        if locked:
+            return locked
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
@@ -347,6 +363,9 @@ class PhoneNumberActivateView(APIView):
     permission_classes = [IsClinicAdmin]
 
     def post(self, request):
+        locked = _platform_only(request)
+        if locked:
+            return locked
         root = _owned_root(request)
         if root is None:
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
@@ -363,6 +382,9 @@ class PhoneNumberSearchView(APIView):
     permission_classes = [IsClinicAdmin]
 
     def get(self, request):
+        locked = _platform_only(request)
+        if locked:
+            return locked
         params = request.query_params
         number_type = params.get("type", "local")
         if number_type not in {"local", "mobile", "tollfree", "national", "fixed", "any"}:

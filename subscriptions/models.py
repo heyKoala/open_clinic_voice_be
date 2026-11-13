@@ -16,6 +16,8 @@ class SubscriptionPlan(TrackedModel):
     max_receptionists = models.PositiveIntegerField(default=2)
     max_doctors = models.PositiveIntegerField(default=3)
     feature_flags = models.JSONField(default=dict, blank=True)
+    # What one minute of the AI's calls costs a hospital on this plan, in credits (each call rounds up to a whole minute).
+    credits_per_minute = models.PositiveIntegerField(default=10)
 
     def __str__(self) -> str:
         return self.get_name_display()
@@ -50,6 +52,8 @@ class ClinicEntitlement(TrackedModel):
     max_receptionists_override = models.PositiveIntegerField(null=True, blank=True)
     max_doctors_override = models.PositiveIntegerField(null=True, blank=True)
     feature_flags_override = models.JSONField(default=dict, blank=True)
+    # This hospital's own rate; blank means the plan's.
+    credits_per_minute_override = models.PositiveIntegerField(null=True, blank=True)
 
     def get_limit(self, role: str) -> int:
         if role == "clinic_admin":
@@ -59,6 +63,9 @@ class ClinicEntitlement(TrackedModel):
         elif role == "doctor":
             return self.max_doctors_override if self.max_doctors_override is not None else self.plan.max_doctors
         return 0
+
+    def get_credits_per_minute(self) -> int:
+        return self.credits_per_minute_override if self.credits_per_minute_override is not None else self.plan.credits_per_minute
 
     def get_feature_flags(self) -> dict:
         flags = dict(self.plan.feature_flags)

@@ -4,6 +4,8 @@ from common.models import ClinicScopedModel
 
 
 class Patient(ClinicScopedModel):
+    # PROTECT, not the base class's CASCADE: patients (and their appointments, follow-ups and records) must outlive any clinic delete.
+    clinic = models.ForeignKey("clinics.Clinic", on_delete=models.PROTECT)
     class Gender(models.TextChoices): MALE="male", "Male"; FEMALE="female", "Female"; OTHER="other", "Other"; UNSPECIFIED="unspecified", "Unspecified"
     class BloodGroup(models.TextChoices): A_POS="A+", "A+"; A_NEG="A-", "A-"; B_POS="B+", "B+"; B_NEG="B-", "B-"; O_POS="O+", "O+"; O_NEG="O-", "O-"; AB_POS="AB+", "AB+"; AB_NEG="AB-", "AB-"; UNKNOWN="unknown", "Unknown"
     

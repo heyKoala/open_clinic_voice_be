@@ -18,6 +18,8 @@ class AgentConfiguration(ClinicScopedModel):
 class CallLog(ClinicScopedModel):
     class Direction(models.TextChoices): INBOUND="inbound", "Inbound"; OUTBOUND="outbound", "Outbound"
     class Sentiment(models.TextChoices): POSITIVE="positive", "Positive"; NEUTRAL="neutral", "Neutral"; NEGATIVE="negative", "Negative"
+    # PROTECT: call logs are the billing record, so deleting a clinic must never remove them.
+    clinic = models.ForeignKey("clinics.Clinic", on_delete=models.PROTECT)
     patient = models.ForeignKey("patients.Patient", null=True, blank=True, on_delete=models.SET_NULL, related_name="call_logs")
     # The number the call was with: the caller's for inbound, the patient's for outbound ("+91…", "" if unknown).
     # Kept even when no patient record matches, so the front desk can see who called and call back.

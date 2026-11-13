@@ -4,6 +4,7 @@ from rest_framework.permissions import BasePermission
 
 from accounts.models import User
 from clinics.context import bind_active_clinic
+from clinics.status import SUSPENDED_MESSAGE
 
 
 class PublicEndpointPermission(BasePermission):
@@ -22,6 +23,14 @@ class AuthenticatedAndVerified(BasePermission):
         # run after ClinicContextMiddleware, which saw an anonymous user; resolve the clinic now.
         if getattr(request, "clinic", None) is None:
             bind_active_clinic(request, user)
+        clinic = getattr(request, "clinic", None)
+        if clinic is None:
+            # HeyKoala's own platform logins belong to no hospital: they use /platform/, never a hospital's endpoints.
+            self.message = "This account is not part of a hospital."
+            return False
+        if clinic.is_blocked:
+            self.message = SUSPENDED_MESSAGE
+            return False
         return True
 
 

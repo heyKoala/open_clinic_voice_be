@@ -64,7 +64,8 @@ class User(TrackedModel, AbstractBaseUser, PermissionsMixin):
 		OTHER = "other", "Other"
 		UNSPECIFIED = "unspecified", "Unspecified"
 
-	clinic = models.ForeignKey("clinics.Clinic", null=True, blank=True, on_delete=models.CASCADE)
+	# PROTECT: deleting a hospital must never take its people with it. Platform admins have no clinic.
+	clinic = models.ForeignKey("clinics.Clinic", null=True, blank=True, on_delete=models.PROTECT)
 	clinics = models.ManyToManyField("clinics.Clinic", related_name="users", blank=True)
 	email = models.EmailField(unique=True)
 	full_name = models.CharField(max_length=255)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from django.db import models
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from common.models import TrackedModel
@@ -19,11 +20,16 @@ class Clinic(TrackedModel):
 		PAST_DUE = "past_due", "Past Due"
 		CANCELED = "canceled", "Canceled"
 
+	class Status(models.TextChoices):
+		ACTIVE = "active", "Active"
+		SUSPENDED = "suspended", "Suspended"
+		ARCHIVED = "archived", "Archived"
+
 	class ClinicType(models.TextChoices):
 		SINGLE_DOCTOR = "single_doctor", "Single Doctor"
 		MULTI_DOCTOR = "multi_doctor", "Multi Doctor"
 
-	name = models.CharField(max_length=255, unique=True)
+	name = models.CharField(max_length=255)
 	address = models.TextField(blank=True)
 	clinic_type = models.CharField(
 		max_length=32, 
@@ -36,6 +42,11 @@ class Clinic(TrackedModel):
 		default=SubscriptionStatus.TRIAL,
 	)
 	trial_ends_at = models.DateTimeField(default=default_trial_ends_at)
+
+	# HeyKoala's own switch for the hospital (set from the platform admin, on the main clinic; its centres follow it).
+	# Suspended or archived: the AI answers no calls, no reminder calls go out and the staff cannot sign in.
+	# Nothing is deleted, so it can be turned back on.
+	status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE, db_index=True)
 
 	# Additional Clinic Profile Details
 	phone = models.CharField(max_length=32, blank=True)
@@ -60,8 +71,21 @@ class Clinic(TrackedModel):
 		"self", null=True, blank=True, on_delete=models.PROTECT, related_name="branches"
 	)
 
+	class Meta:
+		constraints = [
+			# A hospital's name is unique among hospitals; a centre's only within its own hospital, so two
+			# hospitals can both have a "Jayanagar" centre.
+			models.UniqueConstraint(Lower("name"), condition=models.Q(parent__isnull=True), name="uniq_hospital_name"),
+			models.UniqueConstraint("parent", Lower("name"), condition=models.Q(parent__isnull=False), name="uniq_centre_name_per_hospital"),
+		]
+
 	def __str__(self) -> str:
 		return self.name
+
+	@property
+	def is_blocked(self) -> bool:
+		"""True when the hospital this clinic belongs to is suspended or archived."""
+		return self.root.status != self.Status.ACTIVE
 
 	@property
 	def root(self) -> "Clinic":
@@ -129,7 +153,7 @@ class PaymentTransaction(TrackedModel):
 		CAPTURED = "captured", "Captured"
 		FAILED = "failed", "Failed"
 
-	clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name="payment_transactions")
+	clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name="payment_transactions")
 	razorpay_order_id = models.CharField(max_length=255, unique=True)
 	razorpay_payment_id = models.CharField(max_length=255, blank=True)
 	razorpay_signature = models.CharField(max_length=255, blank=True)

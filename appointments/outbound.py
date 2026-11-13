@@ -85,6 +85,8 @@ def webhook_url(call: PatientCall, base_url: str) -> str:
 def place_call(call: PatientCall, base_url: str = "", now=None) -> PatientCall:
     """Have the AI dial the patient now. Raises DialError (nothing changes) if it can't."""
     now = now or timezone.now()
+    if call.clinic.is_blocked:
+        raise DialError("The hospital is suspended.")
     base_url = public_base_url(base_url)
     problem = missing_setup(base_url)
     if problem:
@@ -137,7 +139,7 @@ def dispatch_due(now=None) -> int:
     from appointments.models import PatientCallSettings
     placed = 0
     for call_settings in PatientCallSettings.objects.filter(ai_calls_enabled=True).select_related("clinic"):
-        if not _in_window(call_settings, now):
+        if call_settings.clinic.is_blocked or not _in_window(call_settings, now):
             continue
         due = PatientCall.objects.filter(
             clinic__in=call_settings.clinic.group_clinics(), status=Status.SCHEDULED, due_at__lte=now,
