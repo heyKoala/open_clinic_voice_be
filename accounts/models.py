@@ -89,6 +89,8 @@ class User(TrackedModel, AbstractBaseUser, PermissionsMixin):
 	email_verified_at = models.DateTimeField(null=True, blank=True)
 	failed_login_attempts = models.PositiveIntegerField(default=0)
 	lock_until = models.DateTimeField(null=True, blank=True)
+	# Set when HeyKoala's team chose the password: the person must pick their own at the next sign-in.
+	must_change_password = models.BooleanField(default=False)
 
 	USERNAME_FIELD = "email"
 	REQUIRED_FIELDS = []
@@ -104,6 +106,8 @@ class Invitation(TrackedModel):
 	invited_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sent_invitations")
 	email = models.EmailField()
 	role = models.CharField(max_length=32, choices=User.Role.choices)
+	# For a hospital admin who is also a doctor: accepting the invite then creates their doctor profile too.
+	is_also_doctor = models.BooleanField(default=False)
 	token_hash = models.CharField(max_length=64, unique=True)
 	expires_at = models.DateTimeField(default=default_invite_expiry)
 	used_at = models.DateTimeField(null=True, blank=True)

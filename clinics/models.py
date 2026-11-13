@@ -64,6 +64,8 @@ class Clinic(TrackedModel):
 	# The hospital's icon, shown beside its name in the app (a path the front end serves, or a full URL).
 	# Blank shows a plain building icon. Set on the main clinic; its centres show the same one.
 	logo_url = models.CharField(max_length=500, blank=True)
+	# An uploaded logo (PNG, or a vetted SVG). When set, ``logo_url`` points at the endpoint that serves it.
+	logo_file = models.FileField(upload_to="hospital_logos/", blank=True)
 
 	# A centre (branch) points at its main clinic; the main clinic has no parent. Centres of one
 	# clinic share the main clinic's phone number and AI receptionist.

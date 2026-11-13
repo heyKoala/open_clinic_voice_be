@@ -244,7 +244,7 @@ def rotate_refresh_token(raw_refresh: str):
     return str(new_refresh.access_token), str(new_refresh)
 
 
-def create_invitation(*, clinic: Clinic, invited_by: User, email: str, role: str) -> str:
+def create_invitation(*, clinic: Clinic, invited_by: User, email: str, role: str, is_also_doctor: bool = False) -> str:
     ensure_email_available(email)
 
     with transaction.atomic():
@@ -292,6 +292,7 @@ def create_invitation(*, clinic: Clinic, invited_by: User, email: str, role: str
                 invited_by=invited_by,
                 email=email.lower(),
                 role=role,
+                is_also_doctor=bool(is_also_doctor and role == User.Role.CLINIC_ADMIN),
                 token_hash=hashed,
             )
         except IntegrityError as exc:
@@ -344,11 +345,12 @@ def accept_invitation(*, signed_token: str, full_name: str, password: str) -> Us
             full_name=full_name,
             password=password,
             role=invite.role,
+            is_doctor=bool(invite.is_also_doctor and invite.role == User.Role.CLINIC_ADMIN),
             membership_status=User.MembershipStatus.ACTIVE,
             is_verified=True,
             email_verified_at=timezone.now(),
         )
-        if user.role == User.Role.DOCTOR:
+        if user.role == User.Role.DOCTOR or user.is_doctor:
             Doctor.objects.get_or_create(
                 user=user,
                 clinic=invite.clinic,

@@ -5,24 +5,26 @@ URL, never on "the signed-in user's clinic". Every write is recorded in the audi
 """
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from accounts.services import get_or_create_clinic_entitlement
 from clinics.models import Clinic, ClinicConfiguration
-from platform_admin import credits, presenters
+from clinics.logos import save_logo
+from platform_admin import credits, presenters, provision
 from platform_admin.audit import log_platform_action
 from platform_admin.models import CreditAccount, CreditLedger, PlatformAuditLog, PlatformDefaults
 from platform_admin.permissions import PlatformAPIView
 from platform_admin.serializers import (
-    CreditChangeSerializer, DefaultsSerializer, HospitalUpdateSerializer, PlanChangeSerializer,
+    CreditChangeSerializer, DefaultsSerializer, HospitalUpdateSerializer, NewHospitalSerializer, PlanChangeSerializer,
 )
 from subscriptions.models import SubscriptionPlan
 
@@ -79,9 +81,38 @@ class OverviewView(PlatformAPIView):
         })
 
 
+def form_payload(request) -> dict:
+    """The form posts JSON, or multipart with the fields as JSON text in ``payload`` (so a logo can travel with them)."""
+    raw = request.data.get("payload") if hasattr(request.data, "get") else None
+    if raw is None:
+        return request.data
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        raise serializers.ValidationError({"payload": ["The form data could not be read."]})
+    if not isinstance(data, dict):
+        raise serializers.ValidationError({"payload": ["The form data could not be read."]})
+    return data
+
+
 class HospitalListView(PlatformAPIView):
     def get(self, request):
         return Response([presenters.summary(root) for root in presenters.hospitals()])
+
+    def post(self, request):
+        serializer = NewHospitalSerializer(data=form_payload(request))
+        serializer.is_valid(raise_exception=True)
+        try:
+            created = provision.provision_hospital(actor=request.user, data=serializer.validated_data, logo=request.FILES.get("logo"))
+        except serializers.ValidationError as exc:
+            # A logo problem is reported under "logo"; everything else keeps the field name it came with.
+            detail = exc.detail
+            if isinstance(detail, list):
+                detail = {"logo": detail}
+            raise serializers.ValidationError(detail)
+        body = presenters.detail(created.clinic)
+        body["invite_sent"] = created.invite_sent if created.invite_sent is not None else False
+        return Response(body, status=status.HTTP_201_CREATED)
 
 
 class HospitalDetailView(PlatformAPIView):
@@ -110,6 +141,15 @@ class HospitalDetailView(PlatformAPIView):
                 setattr(configuration, field, data[field])
             if config_changed:
                 configuration.save()
+
+            logo = request.FILES.get("logo")
+            if logo is not None:
+                try:
+                    save_logo(root, logo)
+                except serializers.ValidationError as exc:
+                    raise serializers.ValidationError({"logo": exc.detail})
+                root.save(update_fields=["logo_file", "logo_url", "updated_at"])
+                log_platform_action(request.user, "update_logo", root, {})
 
             if "status" in changed:
                 log_platform_action(request.user, STATUS_ACTION[root.status], root, {"from": previous_status, "to": root.status})

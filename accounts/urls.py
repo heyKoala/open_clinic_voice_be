@@ -21,6 +21,7 @@ from accounts.views import (
     VerifyEmailView,
     WebSocketTicketView,
     MyClinicsView,
+    ChangePasswordView,
 )
 
 urlpatterns = [
@@ -28,6 +29,7 @@ urlpatterns = [
     path("verify-email/", VerifyEmailView.as_view(), name="verify-email"),
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
     path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
+    path("change-password/", ChangePasswordView.as_view(), name="change-password"),
     path("login/", LoginView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
     path("refresh/", RefreshView.as_view(), name="refresh"),
