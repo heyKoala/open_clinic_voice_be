@@ -287,6 +287,8 @@ class PhoneNumberView(APIView):
             return Response(NOT_OWNER, status=status.HTTP_403_FORBIDDEN)
         payload = _phone_number_payload(root)
         payload["can_purchase"] = payload["can_purchase"] and request.user.is_staff
+        # Whether this person may buy, connect or release it (only HeyKoala's staff): the screen shows it read-only otherwise.
+        payload["can_manage"] = bool(request.user.is_staff)
         return Response(payload)
 
     def post(self, request):

@@ -1,6 +1,6 @@
 from django.urls import path, register_converter
 
-from platform_admin import views, views_hospital as people
+from platform_admin import views, views_agent as agent, views_hospital as people
 
 
 class SignedInt:
@@ -43,6 +43,15 @@ urlpatterns = [
     path("hospitals/<int:pk>/integrations/<str:provider>/", people.HospitalIntegrationView.as_view(), name="platform-integration"),
     path("hospitals/<int:pk>/integrations/<str:provider>/test/", people.HospitalIntegrationTestView.as_view(), name="platform-integration-test"),
 
+    path("hospitals/<int:pk>/agent/", agent.HospitalAgentView.as_view(), name="platform-agent"),
+    path("hospitals/<int:pk>/agent/providers/", agent.HospitalAgentProvidersView.as_view(), name="platform-agent-providers"),
+    path("hospitals/<int:pk>/agent/voices/", agent.HospitalAgentVoicesView.as_view(), name="platform-agent-voices"),
+    path("hospitals/<int:pk>/agent/preview/", agent.HospitalAgentPreviewView.as_view(), name="platform-agent-preview"),
+
     path("defaults/", views.DefaultsView.as_view(), name="platform-defaults"),
+    path("defaults/agent/", agent.TemplateAgentView.as_view(), name="platform-agent-template"),
+    path("defaults/agent/providers/", agent.TemplateAgentProvidersView.as_view(), name="platform-agent-template-providers"),
+    path("defaults/agent/voices/", agent.TemplateAgentVoicesView.as_view(), name="platform-agent-template-voices"),
+    path("defaults/agent/preview/", agent.TemplateAgentPreviewView.as_view(), name="platform-agent-template-preview"),
     path("audit-log/", views.AuditLogView.as_view(), name="platform-audit-log"),
 ]

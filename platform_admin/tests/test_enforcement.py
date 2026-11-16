@@ -104,7 +104,7 @@ class TestSuspension:
 class TestPhoneNumbersArePlatformOnly:
     def test_a_hospital_admin_can_see_the_number_but_change_nothing(self, admin_client):
         read = admin_client.get("/api/v1/clinics/phone-number/")
-        assert read.status_code == 200 and read.json()["can_purchase"] is False
+        assert read.status_code == 200 and read.json()["can_purchase"] is False and read.json()["can_manage"] is False
 
         for method, url, body in [
             ("post", "/api/v1/clinics/phone-number/", {"number": "918031150501"}),
@@ -118,6 +118,7 @@ class TestPhoneNumbersArePlatformOnly:
 
     def test_platform_staff_get_past_the_lock(self, clinic):
         staff = client_for(make_user("staff@h.example", clinic=clinic, is_staff=True))
+        assert staff.get("/api/v1/clinics/phone-number/").json()["can_manage"] is True
         # An invalid number is rejected by the number check, which only runs once the lock is passed.
         response = staff.post("/api/v1/clinics/phone-number/", {"number": "12"}, format="json")
         assert response.status_code == 400 and "number" in response.json()

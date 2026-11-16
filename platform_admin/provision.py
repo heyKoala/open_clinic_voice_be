@@ -19,7 +19,7 @@ from accounts.services import create_invitation
 from clinics.logos import save_logo
 from clinics.models import Clinic, ClinicConfiguration
 from doctors.models import Doctor
-from platform_admin import credits
+from platform_admin import agent_template, credits
 from platform_admin.audit import log_platform_action
 from platform_admin.models import CreditAccount, PlatformDefaults
 from subscriptions.models import ClinicEntitlement, SubscriptionPlan
@@ -102,6 +102,9 @@ def provision_hospital(*, actor, data: dict, logo=None) -> Provisioned:
             )
             if commercials["opening_credits"] > 0:
                 credits.add_credits(account, commercials["opening_credits"], note="Opening credits", actor=actor)
+
+            # The new hospital's AI receptionist starts as a copy of the template (if one was set).
+            agent_template.copy_into(clinic)
 
             if admin["mode"] == "password":
                 _create_admin_user(clinic, admin)

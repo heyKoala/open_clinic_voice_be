@@ -106,6 +106,8 @@ class PlatformDefaults(models.Model):
     max_admins = models.PositiveIntegerField(default=2)
     max_doctors = models.PositiveIntegerField(default=20)
     max_receptionists = models.PositiveIntegerField(default=5)
+    # The AI receptionist every new hospital starts with (a settings row that belongs to no hospital); see agent_template.
+    agent_template = models.OneToOneField("ai_agent.VoiceAgentSettings", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
 
     class Meta:
         verbose_name_plural = "platform defaults"
