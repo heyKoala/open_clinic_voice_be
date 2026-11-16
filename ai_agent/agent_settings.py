@@ -114,9 +114,14 @@ def _legacy_voice(root) -> str:
     return voice_type[len("sarvam_"):] if voice_type.startswith("sarvam_") else ""
 
 
-def effective_settings(root) -> dict:
-    """The settings a call to ``root`` runs with: what was saved, with defaults for the rest."""
-    saved = VoiceAgentSettings.objects.filter(clinic=root).first()
+_UNSET = object()
+
+
+def effective_settings(root, saved=_UNSET) -> dict:
+    """The settings a call to ``root`` runs with: what was saved, with defaults for the rest.
+    ``saved`` lets the caller supply the row (the platform's template has no hospital to look it up by)."""
+    if saved is _UNSET:
+        saved = VoiceAgentSettings.objects.filter(clinic=root).first()
     stages = {}
     for name, default in DEFAULT_STAGES.items():
         stage = dict(getattr(saved, name, None) or default)
@@ -350,7 +355,7 @@ def voice_stage(model_type: str) -> str:
     return "realtime" if model_type == VoiceAgentSettings.ModelType.REALTIME else "tts"
 
 
-def save_settings(root, data: dict, can_change_models: bool = True) -> VoiceAgentSettings:
+def save_settings(root, data: dict, can_change_models: bool = True, target: VoiceAgentSettings | None = None) -> VoiceAgentSettings:
     """Validate and store the settings for ``root``. Only the stages the chosen model type uses
     are validated and replaced; the others keep what was saved before.
 
@@ -363,7 +368,7 @@ def save_settings(root, data: dict, can_change_models: bool = True) -> VoiceAgen
             raise InvalidSettings({"model_type": "Choose standard or realtime."})
         chosen = {kind: data.get(kind) for kind in STAGES_BY_MODEL_TYPE[model_type]}
     else:
-        current = effective_settings(root)
+        current = effective_settings(root, target if target is not None else _UNSET)
         model_type = current["model_type"]
         kind = voice_stage(model_type)
         sent = data.get(kind) if isinstance(data.get(kind), dict) else {}
@@ -380,7 +385,7 @@ def save_settings(root, data: dict, can_change_models: bool = True) -> VoiceAgen
             stages[kind] = resolve_stage(kind, choice)
         except InvalidSettings as exc:
             errors.update(exc.errors)
-    saved = VoiceAgentSettings.objects.filter(clinic=root).first()
+    saved = target if target is not None else VoiceAgentSettings.objects.filter(clinic=root).first()
     current = {name: getattr(saved, name) for name in CALL_FIELDS} if saved else None
     try:
         calls = resolve_call_settings(data, current)
@@ -389,7 +394,7 @@ def save_settings(root, data: dict, can_change_models: bool = True) -> VoiceAgen
     if errors:
         raise InvalidSettings(errors)
 
-    record, _ = VoiceAgentSettings.objects.get_or_create(clinic=root)
+    record = target if target is not None else VoiceAgentSettings.objects.get_or_create(clinic=root)[0]
     # The built-in texts are stored as blank so that later improvements to them still apply.
     record.first_message = "" if first_message == DEFAULT_FIRST_MESSAGE else first_message
     record.system_prompt = "" if system_prompt == DEFAULT_SYSTEM_PROMPT else system_prompt
@@ -402,9 +407,9 @@ def save_settings(root, data: dict, can_change_models: bool = True) -> VoiceAgen
     return record
 
 
-def settings_payload(root) -> dict:
+def settings_payload(root, saved=_UNSET) -> dict:
     """What the settings page shows (stages without the provider-side ``config``)."""
-    current = effective_settings(root)
+    current = effective_settings(root, saved)
     payload = {key: current[key] for key in ("first_message", "system_prompt", "model_type", "is_customised", *CALL_FIELDS)}
     payload["call_defaults"] = dict(CALL_DEFAULTS)
     payload["closed_message_default"] = closed_message_for({**current, "closed_message": ""}, root)
