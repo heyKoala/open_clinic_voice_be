@@ -1,6 +1,21 @@
-from django.urls import path
+from django.urls import path, register_converter
 
-from platform_admin import views
+from platform_admin import views, views_hospital as people
+
+
+class SignedInt:
+    """A whole number that may be negative: an unused invitation is addressed as ``-<its id>``."""
+
+    regex = r"-?[0-9]+"
+
+    def to_python(self, value):
+        return int(value)
+
+    def to_url(self, value):
+        return str(value)
+
+
+register_converter(SignedInt, "signed")
 
 urlpatterns = [
     path("overview/", views.OverviewView.as_view(), name="platform-overview"),
@@ -9,6 +24,25 @@ urlpatterns = [
     path("hospitals/<int:pk>/credits/", views.HospitalCreditsView.as_view(), name="platform-credits"),
     path("hospitals/<int:pk>/ledger/", views.HospitalLedgerView.as_view(), name="platform-ledger"),
     path("hospitals/<int:pk>/plan/", views.HospitalPlanView.as_view(), name="platform-plan"),
+
+    path("hospitals/<int:pk>/users/", people.HospitalUsersView.as_view(), name="platform-users"),
+    path("hospitals/<int:pk>/users/<signed:ref>/", people.HospitalUserView.as_view(), name="platform-user"),
+    path("hospitals/<int:pk>/users/<signed:ref>/resend-invite/", people.ResendInviteView.as_view(), name="platform-user-resend"),
+    path("hospitals/<int:pk>/users/<signed:ref>/revoke-invite/", people.RevokeInviteView.as_view(), name="platform-user-revoke"),
+    path("hospitals/<int:pk>/users/<signed:ref>/reset-password/", people.ResetPasswordView.as_view(), name="platform-user-reset"),
+    path("hospitals/<int:pk>/users/<signed:ref>/set-password/", people.SetPasswordView.as_view(), name="platform-user-set-password"),
+
+    path("hospitals/<int:pk>/centres/", people.HospitalCentresView.as_view(), name="platform-centres"),
+    path("hospitals/<int:pk>/centres/<int:cid>/", people.HospitalCentreView.as_view(), name="platform-centre"),
+
+    path("hospitals/<int:pk>/phone/", people.HospitalPhoneView.as_view(), name="platform-phone"),
+    path("hospitals/<int:pk>/phone/search/", people.HospitalPhoneSearchView.as_view(), name="platform-phone-search"),
+    path("hospitals/<int:pk>/phone/activate/", people.HospitalPhoneActivateView.as_view(), name="platform-phone-activate"),
+
+    path("hospitals/<int:pk>/integrations/", people.HospitalIntegrationsView.as_view(), name="platform-integrations"),
+    path("hospitals/<int:pk>/integrations/<str:provider>/", people.HospitalIntegrationView.as_view(), name="platform-integration"),
+    path("hospitals/<int:pk>/integrations/<str:provider>/test/", people.HospitalIntegrationTestView.as_view(), name="platform-integration-test"),
+
     path("defaults/", views.DefaultsView.as_view(), name="platform-defaults"),
     path("audit-log/", views.AuditLogView.as_view(), name="platform-audit-log"),
 ]
