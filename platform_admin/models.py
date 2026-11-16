@@ -40,6 +40,8 @@ class CreditAccount(TrackedModel):
     low_balance_threshold = models.PositiveIntegerField(default=500)
     # Off by default: the AI keeps answering at zero and the platform admin is alerted instead.
     hard_stop = models.BooleanField(default=False)
+    # Calls that started at or after this moment are charged; earlier ones never are. Empty = not charging yet.
+    charging_from = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:
         return f"{self.clinic.name}: {self.balance} credits"
@@ -64,6 +66,9 @@ class CreditLedger(models.Model):
     actor_email = models.CharField(max_length=254, blank=True)
     # The call a ``usage`` entry paid for (so a retried event can never charge a call twice).
     call_log = models.ForeignKey("ai_agent.CallLog", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_entries")
+    # For call entries: the whole minutes charged (a later correction holds just the change) and the rate per minute used.
+    minutes = models.IntegerField(null=True, blank=True)
+    rate = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

@@ -32,6 +32,7 @@ class Command(BaseCommand):
         parser.add_argument("--max-admins", type=int, default=None, help="Default: the platform default, but never below how many it has.")
         parser.add_argument("--max-doctors", type=int, default=None)
         parser.add_argument("--max-receptionists", type=int, default=None)
+        parser.add_argument("--start-charging", action="store_true", help="Charge credits for calls from now on (earlier calls are never charged).")
         parser.add_argument("--dry-run", action="store_true", help="Show what would change and change nothing.")
 
     def handle(self, *args, **options):
@@ -63,6 +64,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  seat limits       : {limits}  (in use: { {r: usage[r]['used'] for r in usage} })")
         self.stdout.write(f"  credit account    : {'exists, balance ' + str(account.balance) if account else 'will be created'}"
                           f"{', opening credits ' + str(options['opening']) if options['opening'] and not account else ''}")
+        self.stdout.write(f"  call charging     : {'will start now (earlier calls are not charged)' if options['start_charging'] else ('on since ' + str(account.charging_from) if account and account.charging_from else 'off (use --start-charging)')}")
         if options["dry_run"]:
             self.stdout.write(self.style.WARNING("Dry run: nothing was changed."))
             return
@@ -83,6 +85,11 @@ class Command(BaseCommand):
             account = credits.account_for(root)
             account.low_balance_threshold = options["low_balance"]
             account.save(update_fields=["low_balance_threshold", "updated_at"])
+            if options["start_charging"] and account.charging_from is None:
+                from django.utils import timezone
+
+                account.charging_from = timezone.now()
+                account.save(update_fields=["charging_from", "updated_at"])
             if created and options["opening"] > 0:
                 credits.add_credits(account, options["opening"], note="Opening credits")
             log_platform_action(None, "adopt_hospital", root, {"plan": options["plan"], "rate": options["rate"], "limits": limits, "opening": options["opening"] if created else 0})

@@ -246,6 +246,10 @@ def _handle_webhook(clinic, request, is_test=False):
             # 5xx makes the provider retry; recording is idempotent per call id.
             logger.exception("Failed to record call event for clinic %s", clinic.id)
             return Response({"error": "Failed to record call event."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if log is not None:
+            from platform_admin.charging import charge_call_safely
+
+            charge_call_safely(log.id)  # a no-op until the call has a length; never disturbs the call record
         return Response({"status": "recorded", "call_log_id": log.id if log else None}, status=status.HTTP_200_OK)
     if clinic.is_blocked:
         # Call events (above) are still recorded so nothing is lost. A new call gets no agent, so nobody answers it.

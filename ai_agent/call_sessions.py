@@ -170,3 +170,6 @@ def finish_call_log(call_log_id: int, caller: str, got_media: bool) -> None:
         for field, value in updates.items():
             setattr(log, field, value)
         log.save(update_fields=[*updates, "updated_at"])
+    from platform_admin.charging import charge_call_safely
+
+    charge_call_safely(call_log_id)  # the call's length is stored by now (event or transcript): charge it

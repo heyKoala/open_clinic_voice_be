@@ -107,6 +107,7 @@ def detail(root: Clinic) -> dict:
         "admin_email": admin.email if admin else (invited.email if invited else ""),
         "phone_number": _phone_number_payload(root)["phone_number"],
         "limits": seat_usage(root),
+        "charging_from": (credits.peek_account(root).charging_from if credits.peek_account(root) else None),
     }
 
 
@@ -124,6 +125,8 @@ def ledger_entry(entry) -> dict:
         "note": entry.note,
         "actor": entry.actor_email or None,
         "call_id": entry.call_log_id,
+        "minutes": entry.minutes,
+        "rate": entry.rate,
     }
 
 

@@ -36,6 +36,10 @@ app.conf.beat_schedule = {
         'task': 'patients.tasks.process_pending_messages',
         'schedule': 60.0,
     },
+    'settle-call-credits': {
+        'task': 'platform_admin.tasks.settle_unbilled_calls',
+        'schedule': 120.0,  # every 2 minutes: charge any finished call that was missed
+    },
     'cleanup-expired-reports': {
         'task': 'reports.tasks.cleanup_expired_reports',
         'schedule': 60.0 * 60,

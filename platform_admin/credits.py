@@ -47,14 +47,17 @@ def _actor_fields(actor) -> dict:
 
 
 @transaction.atomic
-def post_entry(account: CreditAccount, entry_type: str, amount: int, *, note: str = "", actor=None, call_log=None) -> CreditLedger:
+def post_entry(
+    account: CreditAccount, entry_type: str, amount: int, *, note: str = "", actor=None, call_log=None,
+    minutes: int | None = None, rate: int | None = None,
+) -> CreditLedger:
     """Add one signed entry and move the balance by the same amount, atomically."""
     locked = CreditAccount.objects.select_for_update().get(pk=account.pk)
     locked.balance += amount
     locked.save(update_fields=["balance", "updated_at"])
     entry = CreditLedger.objects.create(
         account=locked, entry_type=entry_type, amount=amount, balance_after=locked.balance, note=note[:200],
-        call_log=call_log, **_actor_fields(actor),
+        call_log=call_log, minutes=minutes, rate=rate, **_actor_fields(actor),
     )
     account.balance = locked.balance
     return entry

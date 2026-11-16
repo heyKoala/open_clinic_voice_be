@@ -96,7 +96,10 @@ def provision_hospital(*, actor, data: dict, logo=None) -> Provisioned:
                 max_receptionists_override=defaults.max_receptionists,
             )
 
-            account = CreditAccount.objects.create(clinic=clinic, low_balance_threshold=commercials["low_balance_threshold"])
+            # A new hospital is charged for every call from the start.
+            account = CreditAccount.objects.create(
+                clinic=clinic, low_balance_threshold=commercials["low_balance_threshold"], charging_from=timezone.now(),
+            )
             if commercials["opening_credits"] > 0:
                 credits.add_credits(account, commercials["opening_credits"], note="Opening credits", actor=actor)
 
