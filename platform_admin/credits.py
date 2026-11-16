@@ -20,7 +20,8 @@ def account_for(clinic) -> CreditAccount:
     root = clinic.root
     account = CreditAccount.objects.filter(clinic=root).first()
     if account is None:
-        account, _ = CreditAccount.objects.get_or_create(clinic=root)
+        # A new account holds 0 credits, so it starts out "empty": that is not news, and must not email anyone on the first call.
+        account, _ = CreditAccount.objects.get_or_create(clinic=root, defaults={"alert_state": "empty"})
     return account
 
 

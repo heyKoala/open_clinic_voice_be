@@ -188,3 +188,33 @@ class TestEmailFailure:
         run(clinic_b, 9000)    # empty
         rows = {r["name"]: r for r in client_for(platform_admin).get("/api/v1/platform/overview/").json()["low_balance"]}
         assert (rows["Test Clinic"]["state"], rows["Other Clinic"]["state"]) == ("low", "empty")
+
+
+# ── a hospital that starts at zero (Gunasheela's go-live) ─────────────────────
+
+class TestStartingAtZero:
+    def test_a_new_account_at_zero_is_already_empty_so_the_first_call_emails_nobody(self, clinic, clinic_admin, platform_admin, run):
+        account = charging_on(clinic)                        # balance 0, charging on
+        assert account.alert_state == "empty"
+        run(clinic, 120)
+        assert mail.outbox == [] and CreditAccount.objects.get(clinic=clinic).balance == -20
+
+    def test_adopting_a_hospital_with_no_credits_emails_nobody_on_its_first_call(self, clinic, clinic_admin, platform_admin, run):
+        from django.core.management import call_command
+        call_command("adopt_hospital", "--clinic-id", str(clinic.id), "--start-charging", stdout=open(__import__("os").devnull, "w"))
+        assert state(clinic) == "empty"
+        run(clinic, 120)
+        assert mail.outbox == []
+
+    def test_an_old_account_left_at_ok_is_put_right_by_adoption_without_an_email(self, clinic, clinic_admin, platform_admin, run):
+        from django.core.management import call_command
+        account = charging_on(clinic)
+        CreditAccount.objects.filter(pk=account.pk).update(alert_state="ok")   # as rows made before alerts existed
+        call_command("adopt_hospital", "--clinic-id", str(clinic.id), stdout=open(__import__("os").devnull, "w"))
+        assert state(clinic) == "empty" and mail.outbox == []
+
+    def test_topping_up_then_draining_still_warns(self, clinic, clinic_admin, platform_admin, run):
+        account = charging_on(clinic)
+        credits.add_credits(account, 600)
+        run(clinic, 600)                                     # down to 500: the warning level
+        assert len(mail.outbox) == 2

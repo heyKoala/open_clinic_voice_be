@@ -13,7 +13,7 @@ from django.db import transaction
 
 from accounts.services import get_or_create_clinic_entitlement
 from clinics.models import Clinic
-from platform_admin import credits, presenters
+from platform_admin import alerts, credits, presenters
 from platform_admin.audit import log_platform_action
 from platform_admin.models import PlatformDefaults
 from subscriptions.models import SubscriptionPlan
@@ -85,6 +85,7 @@ class Command(BaseCommand):
             account = credits.account_for(root)
             account.low_balance_threshold = options["low_balance"]
             account.save(update_fields=["low_balance_threshold", "updated_at"])
+            alerts.sync(account, notify=False)   # where the balance already stands is not news: no email
             if options["start_charging"] and account.charging_from is None:
                 from django.utils import timezone
 
