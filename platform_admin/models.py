@@ -42,6 +42,10 @@ class CreditAccount(TrackedModel):
     hard_stop = models.BooleanField(default=False)
     # Calls that started at or after this moment are charged; earlier ones never are. Empty = not charging yet.
     charging_from = models.DateTimeField(null=True, blank=True)
+    # Where the balance stands for alerts: ok, low (at or under the warning level) or empty. An email goes out only when a call
+    # moves it to a worse state (see platform_admin.alerts).
+    alert_state = models.CharField(max_length=8, default="ok")
+    last_alert_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:
         return f"{self.clinic.name}: {self.balance} credits"

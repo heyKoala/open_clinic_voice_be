@@ -59,7 +59,12 @@ def post_entry(
         account=locked, entry_type=entry_type, amount=amount, balance_after=locked.balance, note=note[:200],
         call_log=call_log, minutes=minutes, rate=rate, **_actor_fields(actor),
     )
+    # A call using credits can raise an alert; adding or setting credits by hand only updates the state quietly.
+    from platform_admin import alerts
+
+    alerts.sync(locked, notify=(entry_type == Entry.USAGE or (entry_type == Entry.ADJUSTMENT and call_log is not None)))
     account.balance = locked.balance
+    account.alert_state = locked.alert_state
     return entry
 
 

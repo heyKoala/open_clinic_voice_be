@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from accounts.services import get_or_create_clinic_entitlement
 from clinics.models import Clinic, ClinicConfiguration
 from clinics.logos import save_logo
-from platform_admin import credits, presenters, provision
+from platform_admin import alerts, credits, presenters, provision, usage
 from platform_admin.audit import log_platform_action
 from platform_admin.models import CreditAccount, CreditLedger, PlatformAuditLog, PlatformDefaults
 from platform_admin.permissions import PlatformAPIView
@@ -67,7 +67,7 @@ class OverviewView(PlatformAPIView):
                 continue
             row = presenters.summary(root)
             if row["balance"] <= row["low_balance_threshold"]:
-                low_balance.append({k: row[k] for k in ("id", "name", "balance", "credits_per_minute")})
+                low_balance.append({**{k: row[k] for k in ("id", "name", "balance", "credits_per_minute")}, "state": alerts.state_for(row["balance"], row["low_balance_threshold"])})
         low_balance.sort(key=lambda row: row["balance"])
 
         return Response({
@@ -178,6 +178,17 @@ class HospitalCreditsView(PlatformAPIView):
         return Response({"balance": account.balance})
 
 
+class HospitalUsageView(PlatformAPIView):
+    """``?days=7|30|90`` (default 30)."""
+
+    def get(self, request, pk):
+        root = get_hospital(pk)
+        raw = request.query_params.get("days", "30")
+        if not raw.isdigit() or int(raw) not in usage.PERIODS:
+            return Response({"days": [f"Choose one of {', '.join(str(p) for p in usage.PERIODS)}."]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(usage.hospital_usage(root, int(raw)))
+
+
 class HospitalLedgerView(PlatformAPIView):
     def get(self, request, pk):
         root = get_hospital(pk)
@@ -210,6 +221,7 @@ class HospitalPlanView(PlatformAPIView):
                 account = credits.account_for(root)
                 account.low_balance_threshold = data["low_balance_threshold"]
                 account.save(update_fields=["low_balance_threshold", "updated_at"])
+                alerts.sync(account, notify=False)
             log_platform_action(request.user, "change_plan", root, dict(data))
         return Response(presenters.detail(root))
 
