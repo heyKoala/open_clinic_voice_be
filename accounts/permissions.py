@@ -22,13 +22,14 @@ class AuthenticatedAndVerified(BasePermission):
         # Authentication paths other than CookieJWTAuthentication (session auth, forced auth)
         # run after ClinicContextMiddleware, which saw an anonymous user; resolve the clinic now.
         if getattr(request, "clinic", None) is None:
-            bind_active_clinic(request, user)
+            bind_active_clinic(request, user, allow_view_as=True)
         clinic = getattr(request, "clinic", None)
         if clinic is None:
             # HeyKoala's own platform logins belong to no hospital: they use /platform/, never a hospital's endpoints.
             self.message = "This account is not part of a hospital."
             return False
-        if clinic.is_blocked:
+        # HeyKoala staff may look at a suspended hospital (that is often why they are looking).
+        if clinic.is_blocked and not getattr(request, "view_as", False):
             self.message = SUSPENDED_MESSAGE
             return False
         return True

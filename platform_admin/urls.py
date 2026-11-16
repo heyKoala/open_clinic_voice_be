@@ -23,6 +23,7 @@ urlpatterns = [
     path("hospitals/<int:pk>/", views.HospitalDetailView.as_view(), name="platform-hospital"),
     path("hospitals/<int:pk>/credits/", views.HospitalCreditsView.as_view(), name="platform-credits"),
     path("hospitals/<int:pk>/ledger/", views.HospitalLedgerView.as_view(), name="platform-ledger"),
+    path("hospitals/<int:pk>/view-as/", views.HospitalViewAsView.as_view(), name="platform-view-as"),
     path("hospitals/<int:pk>/usage/", views.HospitalUsageView.as_view(), name="platform-usage"),
     path("hospitals/<int:pk>/plan/", views.HospitalPlanView.as_view(), name="platform-plan"),
 

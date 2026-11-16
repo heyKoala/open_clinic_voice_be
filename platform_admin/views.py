@@ -178,6 +178,16 @@ class HospitalCreditsView(PlatformAPIView):
         return Response({"balance": account.balance})
 
 
+class HospitalViewAsView(PlatformAPIView):
+    """Opens a view-as session: records who looked at which hospital. The reading itself goes through the hospital's own
+    endpoints with the ``X-View-As-Hospital`` header, which is read-only."""
+
+    def post(self, request, pk):
+        root = get_hospital(pk)
+        log_platform_action(request.user, "view_as_hospital", root)
+        return Response({"id": root.id, "name": root.name, "status": root.status})
+
+
 class HospitalUsageView(PlatformAPIView):
     """``?days=7|30|90`` (default 30)."""
 
