@@ -70,10 +70,12 @@ class FakePlivo:
         return response
 
 
-def _admin(clinic, email, *extra_clinics):
+def _admin(clinic, email, *extra_clinics, is_staff=True):
+    # Buying, linking and releasing numbers is HeyKoala's staff only (a hospital's own admin gets a 403: see
+    # platform_admin/tests/test_enforcement.py), so these number tests act as a staff login attached to the hospital.
     user = User.objects.create_user(
         clinic=clinic, email=email, full_name="Admin", password="x-Pass-123!", role=User.Role.CLINIC_ADMIN,
-        membership_status=User.MembershipStatus.ACTIVE, is_verified=True,
+        membership_status=User.MembershipStatus.ACTIVE, is_verified=True, is_staff=is_staff,
     )
     user.clinics.add(*extra_clinics)
     client = APIClient()

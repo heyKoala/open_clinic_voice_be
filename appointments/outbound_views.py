@@ -13,7 +13,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ai_agent.tool_views import HasRock8WebhookSecret
+from ai_agent.tool_views import HasRock8ToolAccess
 from appointments import journey, outbound
 from appointments.models import PatientCall
 from clinics.models import Clinic
@@ -30,7 +30,7 @@ AGENT_OUTCOMES = {
 class _WorkerView(APIView):
     authentication_classes = []
     throttle_classes = []
-    permission_classes = [HasRock8WebhookSecret]
+    permission_classes = [HasRock8ToolAccess]
 
     def get_call(self, kwargs) -> PatientCall:
         clinic = get_object_or_404(Clinic, id=kwargs["clinic_id"])

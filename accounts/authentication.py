@@ -26,7 +26,7 @@ class CookieJWTAuthentication(JWTAuthentication):
         user = self.get_user(validated_token)
 
         # Resolve active clinic based on user and header
-        bind_active_clinic(request, user)
+        bind_active_clinic(request, user, allow_view_as=True)
 
         if request.method not in ("GET", "HEAD", "OPTIONS", "TRACE"):
             reason = self._enforce_csrf(request)

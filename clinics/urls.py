@@ -5,10 +5,12 @@ from clinics.views import (
     CompleteOnboardingView, IntegrationDetailView, IntegrationListView, IntegrationTestView, PhoneNumberView,
     PhoneNumberSearchView, PhoneNumberActivateView, RazorpayWebhookView, WatiWebhookView,
 )
+from clinics.logos import ClinicLogoView
 
 urlpatterns = [
     path("", ClinicListCreateView.as_view(), name="clinic-list-create"),
     path("<int:pk>/", ClinicDetailView.as_view(), name="clinic-detail"),
+    path("<int:pk>/logo/", ClinicLogoView.as_view(), name="clinic-logo"),
     path("configuration/", ClinicConfigurationView.as_view(), name="clinic-configuration"),
     path("holidays/", ClinicHolidayListCreateView.as_view(), name="clinic-holidays"),
     path("holidays/<str:date>/", ClinicHolidayDestroyView.as_view(), name="clinic-holidays-detail"),

@@ -6,6 +6,21 @@ from clinics.models import Clinic, ClinicConfiguration, ClinicHoliday
 
 
 class ClinicSerializer(serializers.ModelSerializer):
+    def validate_name(self, value):
+        """A hospital's name is unique among hospitals; a centre's only within its own hospital."""
+        value = value.strip()
+        if self.instance is not None:
+            parent_id, exclude = self.instance.parent_id, self.instance.pk
+        else:
+            clinic = getattr(self.context.get("request"), "clinic", None)
+            parent_id, exclude = (clinic.root.id if clinic else None), None
+        taken = Clinic.objects.filter(parent_id=parent_id, name__iexact=value)
+        if exclude:
+            taken = taken.exclude(pk=exclude)
+        if taken.exists():
+            raise serializers.ValidationError("A hospital with this name already exists." if parent_id is None else "This hospital already has a centre with this name.")
+        return value
+
     class Meta:
         model = Clinic
         fields = (

@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 def fetch_call_media(call_log_id, transcript_url=None, recording_url=None):
     """Download a call's transcript and recording from the provider's signed (expiring) links."""
     fetch_media(call_log_id, transcript_url, recording_url)
+    from platform_admin.charging import charge_call_safely
+
+    charge_call_safely(call_log_id)
     return f"Fetched media for CallLog {call_log_id}"
 
 

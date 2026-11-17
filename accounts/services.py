@@ -18,6 +18,7 @@ from accounts.models import EmailVerificationToken, Invitation, PasswordResetTok
 from accounts.utils import generate_raw_token, token_hash
 from audit.models import AuthEvent
 from clinics.models import Clinic
+from clinics.status import SUSPENDED_MESSAGE
 from doctors.models import Doctor
 from subscriptions.models import ClinicEntitlement, SubscriptionPlan
 
@@ -189,6 +190,12 @@ def _lock_duration(attempts: int) -> timedelta:
     return timedelta(minutes=minutes)
 
 
+def ensure_hospital_active(user: User) -> None:
+    """A suspended or archived hospital's people can't sign in. HeyKoala's own staff can, to put it right."""
+    if user.clinic_id and not user.is_staff and user.clinic.is_blocked:
+        raise AuthenticationFailed(SUSPENDED_MESSAGE)
+
+
 def login_user(email: str, password: str) -> User:
     user_qs = User.objects.filter(email__iexact=email)
     user = user_qs.first()
@@ -205,6 +212,7 @@ def login_user(email: str, password: str) -> User:
             user.save(update_fields=["failed_login_attempts", "lock_until", "updated_at"])
         raise AuthenticationFailed("Invalid credentials.")
 
+    ensure_hospital_active(authenticated)
     authenticated.failed_login_attempts = 0
     authenticated.lock_until = None
     authenticated.save(update_fields=["failed_login_attempts", "lock_until", "updated_at"])
@@ -227,6 +235,7 @@ def rotate_refresh_token(raw_refresh: str):
         raise AuthenticationFailed("User no longer exists.") from exc
     if not user.is_active:
         raise AuthenticationFailed("User account is disabled.")
+    ensure_hospital_active(user)
     try:
         refresh.blacklist()
     except Exception:
@@ -235,7 +244,7 @@ def rotate_refresh_token(raw_refresh: str):
     return str(new_refresh.access_token), str(new_refresh)
 
 
-def create_invitation(*, clinic: Clinic, invited_by: User, email: str, role: str) -> str:
+def create_invitation(*, clinic: Clinic, invited_by: User, email: str, role: str, is_also_doctor: bool = False) -> str:
     ensure_email_available(email)
 
     with transaction.atomic():
@@ -283,6 +292,7 @@ def create_invitation(*, clinic: Clinic, invited_by: User, email: str, role: str
                 invited_by=invited_by,
                 email=email.lower(),
                 role=role,
+                is_also_doctor=bool(is_also_doctor and role == User.Role.CLINIC_ADMIN),
                 token_hash=hashed,
             )
         except IntegrityError as exc:
@@ -335,11 +345,12 @@ def accept_invitation(*, signed_token: str, full_name: str, password: str) -> Us
             full_name=full_name,
             password=password,
             role=invite.role,
+            is_doctor=bool(invite.is_also_doctor and invite.role == User.Role.CLINIC_ADMIN),
             membership_status=User.MembershipStatus.ACTIVE,
             is_verified=True,
             email_verified_at=timezone.now(),
         )
-        if user.role == User.Role.DOCTOR:
+        if user.role == User.Role.DOCTOR or user.is_doctor:
             Doctor.objects.get_or_create(
                 user=user,
                 clinic=invite.clinic,

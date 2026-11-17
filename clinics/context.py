@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 ACTIVE_CLINIC_HEADER = "X-Active-Clinic-Id"
+# HeyKoala staff only: look at a hospital through its own pages, read-only (see ``bind_view_as``).
+VIEW_AS_HEADER = "X-View-As-Hospital"
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 # Header value meaning "every centre of my hospital at once" (the front desk's default view).
 ALL_CENTRES = "all"
 
@@ -41,8 +44,43 @@ def resolve_active_clinic(user, requested_id=None):
     return active_clinic
 
 
-def bind_active_clinic(request, user) -> None:
+def bind_view_as(request, user) -> bool:
+    """A platform admin looking at a hospital: the request acts as that hospital's admin, but may only read.
+
+    Only ``is_staff`` users get this; for anyone else the header is ignored. A bad or unknown id is refused, and so is any
+    request that would change something. Returns whether the request is a view-as request.
+    """
+    raw = request.headers.get(VIEW_AS_HEADER)
+    if not raw or not (user.is_staff and user.is_active and user.is_verified):
+        return False
+    from rest_framework import exceptions
+
+    from clinics.models import Clinic
+
+    hospital = Clinic.objects.filter(pk=int(raw), parent__isnull=True).first() if raw.isdigit() else None
+    if hospital is None:
+        raise exceptions.NotFound("Hospital not found.")
+    if request.method not in SAFE_METHODS:
+        raise exceptions.PermissionDenied("You are viewing this hospital as HeyKoala staff: it is read-only here.")
+    request.clinic = hospital
+    request.all_centres = True
+    request.view_as = True
+    django_request = getattr(request, "_request", None)
+    if django_request is not None:
+        django_request.clinic, django_request.all_centres, django_request.view_as = hospital, True, True
+    # In memory only, never saved: the staff login reads the hospital the way its admin would.
+    user.clinic = hospital
+    user.role = "clinic_admin"
+    user.is_clinic_admin = True
+    # ...and a stray save must never write the borrowed role or hospital onto the staff login.
+    user.save = lambda *args, **kwargs: None
+    return True
+
+
+def bind_active_clinic(request, user, allow_view_as: bool = False) -> None:
     """Resolve the active clinic and attach it to the request and (in memory) the user."""
+    if allow_view_as and bind_view_as(request, user):
+        return
     requested = request.headers.get(ACTIVE_CLINIC_HEADER)
     all_centres = str(requested or "").strip().lower() == ALL_CENTRES
     active_clinic = resolve_active_clinic(user, None if all_centres else requested)

@@ -19,6 +19,7 @@ from doctors.models import Doctor, DoctorAbsence
 from appointments.models import Appointment
 from patients.models import MessageLog, Patient
 from clinics.models import Clinic
+from clinics.status import SUSPENDED_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,20 @@ class HasRock8WebhookSecret(BasePermission):
         return clinic_id is not None and hmac.compare_digest(token, rock8_clinic_token(clinic_id))
 
 
+class HasRock8ToolAccess(HasRock8WebhookSecret):
+    """The voice agent's tool calls and call scripts: as above, but refused while the hospital is suspended or archived."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        clinic_id = view.kwargs.get("clinic_id")
+        clinic = Clinic.objects.filter(pk=clinic_id).first() if clinic_id is not None else None
+        if clinic is not None and clinic.is_blocked:
+            self.message = SUSPENDED_MESSAGE
+            return False
+        return True
+
+
 PLACEHOLDER_WORDS = {"unknown", "caller", "patient", "customer", "user", "n/a", "na", "none", "null", "test", "anonymous", "name"}
 DEFAULT_REASON = "AI booked appointment"
 NAME_TITLES = {"mr", "mrs", "ms", "miss", "dr", "smt", "shri", "sri", "master", "baby"}
@@ -110,7 +125,7 @@ class AIToolBaseView(APIView):
     # Server-to-server calls authenticated by secret; the per-IP anonymous throttle would
     # make every concurrent call from the provider share one 30/min budget.
     throttle_classes = []
-    permission_classes = [HasRock8WebhookSecret]
+    permission_classes = [HasRock8ToolAccess]
 
     def get_clinic(self, kwargs):
         clinic_id = kwargs.get('clinic_id')

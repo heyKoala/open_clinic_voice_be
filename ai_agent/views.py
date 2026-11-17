@@ -29,6 +29,7 @@ from rest_framework.decorators import action
 from clinics.models import Clinic
 from clinics.views import _owned_root
 from ai_agent.tool_views import HasRock8WebhookSecret, rock8_path, with_rock8_token
+from clinics.status import SUSPENDED_MESSAGE
 from ai_agent.call_events import is_call_event, recognised_caller, record_call_event
 from ai_agent.call_sessions import caller_number, start_call_log
 from ai_agent.routing import clinic_for_number, dialled_number
@@ -245,7 +246,14 @@ def _handle_webhook(clinic, request, is_test=False):
             # 5xx makes the provider retry; recording is idempotent per call id.
             logger.exception("Failed to record call event for clinic %s", clinic.id)
             return Response({"error": "Failed to record call event."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if log is not None:
+            from platform_admin.charging import charge_call_safely
+
+            charge_call_safely(log.id)  # a no-op until the call has a length; never disturbs the call record
         return Response({"status": "recorded", "call_log_id": log.id if log else None}, status=status.HTTP_200_OK)
+    if clinic.is_blocked:
+        # Call events (above) are still recorded so nothing is lost. A new call gets no agent, so nobody answers it.
+        return Response({"error": "SUSPENDED", "message": SUSPENDED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     caller = caller_number(data)
     try:
         # Inbound numbers never send "call ended" events, so the log is started here.

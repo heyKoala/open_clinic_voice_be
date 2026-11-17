@@ -141,7 +141,7 @@ class LoginView(APIView):
 			raise
 
 		access, refresh = mint_tokens(user)
-		response = Response({"detail": "Login successful.", "is_verified": user.is_verified})
+		response = Response({"detail": "Login successful.", "is_verified": user.is_verified, "must_change_password": user.must_change_password})
 		set_auth_cookies(response, access, refresh)
 		response.set_cookie(
 			key="csrftoken",
@@ -642,6 +642,36 @@ class InviteAcceptView(APIView):
 		set_auth_cookies(response, access, refresh)
 		log_auth_event(request, AuthEvent.EventType.INVITE_ACCEPTED, user=user, email=user.email)
 		return response
+
+class ChangePasswordView(APIView):
+	"""Choose a new password while signed in. Clears the "must change your password" flag HeyKoala's team may have set."""
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		from django.core.exceptions import ValidationError as DjangoValidationError
+		from rest_framework.exceptions import ValidationError as DRFValidationError
+
+		from accounts.serializers import _enforce_strong_password
+
+		current = str(request.data.get("current_password") or "")
+		new = str(request.data.get("new_password") or "")
+		user = request.user
+		if not user.check_password(current):
+			return Response({"current_password": ["The current password is wrong."]}, status=status.HTTP_400_BAD_REQUEST)
+		if new == current:
+			return Response({"new_password": ["Choose a different password from the current one."]}, status=status.HTTP_400_BAD_REQUEST)
+		try:
+			_enforce_strong_password(new)
+		except DRFValidationError as exc:
+			return Response({"new_password": [str(m) for m in exc.detail]}, status=status.HTTP_400_BAD_REQUEST)
+		except DjangoValidationError as exc:
+			return Response({"new_password": list(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+		user.set_password(new)
+		user.must_change_password = False
+		user.save(update_fields=["password", "must_change_password", "updated_at"])
+		log_auth_event(request, AuthEvent.EventType.PASSWORD_RESET, user=user, email=user.email, metadata={"via": "change_password"})
+		return Response({"detail": "Password changed."})
+
 
 class MyClinicsView(APIView):
 	permission_classes = [IsAuthenticated]

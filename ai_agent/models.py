@@ -18,6 +18,8 @@ class AgentConfiguration(ClinicScopedModel):
 class CallLog(ClinicScopedModel):
     class Direction(models.TextChoices): INBOUND="inbound", "Inbound"; OUTBOUND="outbound", "Outbound"
     class Sentiment(models.TextChoices): POSITIVE="positive", "Positive"; NEUTRAL="neutral", "Neutral"; NEGATIVE="negative", "Negative"
+    # PROTECT: call logs are the billing record, so deleting a clinic must never remove them.
+    clinic = models.ForeignKey("clinics.Clinic", on_delete=models.PROTECT)
     patient = models.ForeignKey("patients.Patient", null=True, blank=True, on_delete=models.SET_NULL, related_name="call_logs")
     # The number the call was with: the caller's for inbound, the patient's for outbound ("+91…", "" if unknown).
     # Kept even when no patient record matches, so the front desk can see who called and call back.
@@ -75,7 +77,8 @@ class VoiceAgentSettings(TrackedModel):
         # One speech-to-speech model.
         REALTIME = "realtime", "Realtime"
 
-    clinic = models.OneToOneField("clinics.Clinic", on_delete=models.CASCADE, related_name="voice_agent")
+    # Empty only for the platform's template that new hospitals start from (platform_admin.agent_template).
+    clinic = models.OneToOneField("clinics.Clinic", null=True, blank=True, on_delete=models.CASCADE, related_name="voice_agent")
     # Blank: use the built-in greeting / instructions.
     first_message = models.TextField(blank=True)
     system_prompt = models.TextField(blank=True)
@@ -120,7 +123,7 @@ class VoiceAgentSettings(TrackedModel):
     thinking_sound = models.BooleanField(default=True)
 
     def __str__(self) -> str:
-        return f"Voice agent settings ({self.clinic.name})"
+        return f"Voice agent settings ({self.clinic.name if self.clinic_id else 'template for new hospitals'})"
 
 
 class KnowledgeDocument(ClinicScopedModel):
