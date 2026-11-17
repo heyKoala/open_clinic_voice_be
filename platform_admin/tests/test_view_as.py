@@ -109,3 +109,17 @@ class TestAudit:
     def test_hospital_staff_cannot_start_one(self, clinic, clinic_admin):
         assert client_for(clinic_admin).post(f"/api/v1/platform/hospitals/{clinic.id}/view-as/").status_code == 404
         assert not PlatformAuditLog.objects.filter(action="view_as_hospital").exists()
+
+
+def test_the_view_as_header_is_allowed_cross_site(client, settings):
+    """The app and the API live on different hosts in production, so the browser asks first (CORS preflight)."""
+    from clinics.context import VIEW_AS_HEADER
+
+    assert VIEW_AS_HEADER.lower() in {h.lower() for h in settings.CORS_ALLOW_HEADERS}
+    origin = "https://slot.example.com"
+    settings.CORS_ALLOWED_ORIGINS = [origin]
+    response = client.options(
+        DOCTORS, HTTP_ORIGIN=origin, HTTP_ACCESS_CONTROL_REQUEST_METHOD="GET",
+        HTTP_ACCESS_CONTROL_REQUEST_HEADERS="x-view-as-hospital",
+    )
+    assert "x-view-as-hospital" in response.headers.get("Access-Control-Allow-Headers", "").lower()
