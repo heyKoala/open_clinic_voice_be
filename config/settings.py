@@ -196,6 +196,8 @@ CORS_ALLOW_CREDENTIALS = True
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-active-clinic-id",
+    # Platform staff's read-only "View as hospital" (clinics.context.VIEW_AS_HEADER); the browser drops it cross-site otherwise.
+    "x-view-as-hospital",
 ]
 if not DEBUG and (not CORS_ALLOWED_ORIGINS or any(not origin.startswith("https://") for origin in CORS_ALLOWED_ORIGINS)):
     raise RuntimeError("Production CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins.")
