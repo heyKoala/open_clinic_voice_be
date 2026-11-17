@@ -42,6 +42,19 @@ def minutes_left(balance: int, rate: int) -> int:
     return max(0, balance // rate) if rate > 0 else 0
 
 
+def last_top_up_balance(account: CreditAccount) -> int:
+    """The balance right after the platform last added credits (a grant, or a hand adjustment upwards); 0 if never."""
+    from django.db.models import Q
+
+    entry = (
+        account.entries.filter(Q(entry_type=Entry.GRANT) | Q(entry_type=Entry.ADJUSTMENT, amount__gt=0, call_log__isnull=True))
+        .order_by("-created_at", "-id")
+        .values_list("balance_after", flat=True)
+        .first()
+    )
+    return max(0, entry or 0)
+
+
 def _actor_fields(actor) -> dict:
     authenticated = getattr(actor, "is_authenticated", False)
     return {"actor": actor if authenticated else None, "actor_email": (getattr(actor, "email", "") or "") if authenticated else ""}

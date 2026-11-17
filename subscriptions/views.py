@@ -38,6 +38,8 @@ class CreditBalanceView(APIView):
 			"credits_per_minute": rate,
 			"low_balance_threshold": account.low_balance_threshold if account else credits.DEFAULT_LOW_BALANCE,
 			"minutes_left": credits.minutes_left(balance, rate),
+			# What the balance stood at after the last top-up: the "out of" figure for the sidebar's progress bar.
+			"topped_up_to": max(balance, credits.last_top_up_balance(account) if account else 0),
 		})
 
 

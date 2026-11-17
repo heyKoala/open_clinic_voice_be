@@ -220,7 +220,22 @@ class TestHospitalCreditBalance:
     def test_a_hospital_admin_sees_balance_rate_and_minutes_left(self, admin_client, clinic):
         credits.add_credits(credits.account_for(clinic), 1234)
         body = admin_client.get(self.URL).json()
-        assert body == {"balance": 1234, "credits_per_minute": 10, "low_balance_threshold": 500, "minutes_left": 123}
+        assert body == {
+            "balance": 1234, "credits_per_minute": 10, "low_balance_threshold": 500, "minutes_left": 123, "topped_up_to": 1234,
+        }
+
+    def test_topped_up_to_is_the_balance_after_the_last_top_up(self, admin_client, clinic):
+        account = credits.account_for(clinic)
+        credits.add_credits(account, 1000)
+        credits.post_entry(account, CreditLedger.EntryType.USAGE, -300)
+        credits.add_credits(account, 500)                                   # 1200 after this top-up
+        credits.post_entry(account, CreditLedger.EntryType.USAGE, -200)     # 1000 left
+        body = admin_client.get(self.URL).json()
+        assert (body["balance"], body["topped_up_to"]) == (1000, 1200)
+
+    def test_never_topped_up_reads_as_zero_out_of_zero(self, admin_client):
+        body = admin_client.get(self.URL).json()
+        assert (body["balance"], body["topped_up_to"]) == (0, 0)
 
     def test_no_account_yet_reads_as_zero_and_creates_nothing(self, admin_client):
         assert admin_client.get(self.URL).json()["balance"] == 0
