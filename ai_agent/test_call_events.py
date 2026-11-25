@@ -279,7 +279,7 @@ class TestTestCalls:
     def test_web_call_hands_the_provider_the_test_webhook(self, admin_client, clinic, clinic_admin, settings):
         settings.ROCK8_API_KEY = "key"
         response = mock.Mock(**{"json.return_value": {"token": "lk-token"}})
-        with mock.patch("ai_agent.views.requests.post", return_value=response) as started:
+        with mock.patch("ai_agent.web_call.requests.post", return_value=response) as started:
             res = admin_client.get("/api/v1/ai/web-call/start/", {"participant_identity": "voice_assistant_user_7"})
         assert res.status_code == 200
         webhook_url = started.call_args.kwargs["json"]["webhook_url"]

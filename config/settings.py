@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "followups",
     "clinical",
     "platform_admin",
+    "web_widgets",
 ]
 
 MIDDLEWARE = [
@@ -193,6 +194,9 @@ if DEBUG:
         f"http://{host}:{port}" for host in ("localhost", "127.0.0.1") for port in (4173, 5173, 5174, 5175, 5176)
     ] + ["https://*.devtunnels.ms"]  # demoing the dev server through a VS Code / devtunnel
 CORS_ALLOW_CREDENTIALS = True
+# The website widget's anonymous endpoints answer with their own per-widget CORS headers
+# (web_widgets.utils.apply_widget_cors); the global rules, which allow cookies, must not cover them.
+CORS_URLS_REGEX = r"^/(?!api/v1/widgets/public/).*$"
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-active-clinic-id",
@@ -327,6 +331,17 @@ ROCK8_INBOUND_RULE_ID = get_secret("ROCK8_INBOUND_RULE_ID", "")
 # This backend's public address (e.g. a tunnel), which the voice worker calls back for the call's script.
 # Calls placed from the app use the address the request came in on; scheduled calls need this.
 PUBLIC_BASE_URL = get_secret("PUBLIC_BASE_URL", "")
+
+# Website voice widget (web_widgets).
+# LIVEKIT_URL: where browsers connect for a call (Test call and widget).
+# WIDGET_BUNDLE_URL: where widget.js is served; empty = the frontend's /widget/widget.js.
+# WIDGETS_PUBLIC_ENABLED: switch for the anonymous widget endpoints.
+# WIDGET_CALLS_REQUIRE_CREDITS: refuse new widget calls when the hospital has no credits left
+#   (phone calls are always answered; a public website button is easier to abuse).
+LIVEKIT_URL = get_secret("LIVEKIT_URL", "wss://vx.heykoala.ai")
+WIDGET_BUNDLE_URL = get_secret("WIDGET_BUNDLE_URL", "")
+WIDGETS_PUBLIC_ENABLED = str(get_secret("WIDGETS_PUBLIC_ENABLED", "1")).lower() in ("1", "true", "yes")
+WIDGET_CALLS_REQUIRE_CREDITS = str(get_secret("WIDGET_CALLS_REQUIRE_CREDITS", "0")).lower() in ("1", "true", "yes")
 
 # Caller sentiment for calls whose provider sends no analysis (the clinic number, the Test call): an
 # OpenAI-compatible chat model rates the transcript. Off while SENTIMENT_API_KEY is empty. Point

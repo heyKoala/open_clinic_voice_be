@@ -17,6 +17,7 @@ class AgentConfiguration(ClinicScopedModel):
 
 class CallLog(ClinicScopedModel):
     class Direction(models.TextChoices): INBOUND="inbound", "Inbound"; OUTBOUND="outbound", "Outbound"
+    class Source(models.TextChoices): PHONE="phone", "Phone"; TEST="test", "Test call"; WIDGET="widget", "Website widget"
     class Sentiment(models.TextChoices): POSITIVE="positive", "Positive"; NEUTRAL="neutral", "Neutral"; NEGATIVE="negative", "Negative"
     # PROTECT: call logs are the billing record, so deleting a clinic must never remove them.
     clinic = models.ForeignKey("clinics.Clinic", on_delete=models.PROTECT)
@@ -46,6 +47,10 @@ class CallLog(ClinicScopedModel):
     # Started from the app's "Test call" (staff trying the agent), not by a patient: labelled in the
     # call logs and left out of the call analytics.
     is_test = models.BooleanField(default=False, db_index=True)
+    # How the call reached the agent: the phone number, the app's Test call, or a website widget.
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.PHONE, db_index=True)
+    # The website widget the call came from (``source`` stays "widget" if the widget is later deleted).
+    widget = models.ForeignKey("web_widgets.WebWidget", null=True, blank=True, on_delete=models.SET_NULL, related_name="call_logs")
     # The appointment the agent booked or cancelled in this call (read from its tool results): links the
     # call to that appointment's doctor, for the doctor filter in Reports.
     appointment = models.ForeignKey(
@@ -61,9 +66,12 @@ class CallLog(ClinicScopedModel):
 # A call with nothing in it: no length, no transcript and no recording (the line dropped before anything
 # happened). Left out of the call logs and the call analytics. Calls still in progress, and missed calls
 # (the front desk calls those back), are kept.
+# Browser calls (website widget, Test call) are the exception: the voice service announces one as soon as the
+# button is clicked, even if the visitor never connects, so an "in progress" one with nothing in it is not a
+# call yet. It shows once it has a transcript or recording, shortly after it ends.
 EMPTY_CALL = (
     models.Q(duration_seconds=0, transcript="", recording_url="", recording_file="")
-    & ~models.Q(outcome__in=("in_progress", "unanswered"))
+    & (~models.Q(outcome__in=("in_progress", "unanswered")) | models.Q(outcome="in_progress", source__in=("widget", "test")))
 )
 
 

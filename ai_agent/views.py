@@ -33,6 +33,7 @@ from clinics.status import SUSPENDED_MESSAGE
 from ai_agent.call_events import is_call_event, recognised_caller, record_call_event
 from ai_agent.call_sessions import caller_number, start_call_log
 from ai_agent.routing import clinic_for_number, dialled_number
+from ai_agent.web_call import WebCallError, start_web_call
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +86,13 @@ def closed_config(root, agent: dict) -> dict:
     }, agent)
 
 
-def build_agent_config(clinic, request, caller: str = "", is_test: bool = False) -> dict:
+def build_agent_config(clinic, request, caller: str = "", is_test: bool = False, always_open: bool = False) -> dict:
     """Agent configuration for a call to ``clinic``'s phone number.
 
     Centres share their main clinic's number, so the agent represents the whole group (the main
     clinic and its centres) and nothing else; the tools are scoped to the same group. Outside the
-    answering hours (when set) the caller only hears the closed message; test calls are always answered.
+    answering hours (when set) the caller only hears the closed message; test calls are always answered, and
+    so are website widget calls (``always_open``): visitors come at any time.
     """
     from django.utils import timezone
 
@@ -99,7 +101,7 @@ def build_agent_config(clinic, request, caller: str = "", is_test: bool = False)
     current_date = timezone.now().strftime('%B %d, %Y (%A)')
 
     agent = effective_settings(root)
-    if not is_test and not answering_now(agent):
+    if not (is_test or always_open) and not answering_now(agent):
         return closed_config(root, agent)
     # The admin's instructions, then the facts only the system knows: date, caller and centres.
     system_prompt = (
@@ -121,6 +123,12 @@ def build_agent_config(clinic, request, caller: str = "", is_test: bool = False)
                 f"not greet them again. If they say they are someone else, apologise briefly and carry on. When "
                 f"booking, use {known} as the patient name only after they confirm the appointment is for them."
             )
+    elif always_open:
+        system_prompt += (
+            "\n\nCALLER: This is a voice call from the hospital's website, not a phone call, so there is no caller "
+            "number. Ask for their phone number only when it is needed (for example to book or look up an "
+            "appointment), and read it back to confirm."
+        )
     else:
         system_prompt += "\n\nCALLER: The caller's number is unknown; ask for their phone number and read it back to confirm."
 
@@ -233,10 +241,11 @@ def build_agent_config(clinic, request, caller: str = "", is_test: bool = False)
     }, agent)
 
 
-def _handle_webhook(clinic, request, is_test=False):
+def _handle_webhook(clinic, request, is_test=False, widget=None):
     # Call lifecycle events (call ended, analysis completed, ...) are recorded as CallLogs;
     # any other request is the call-start request asking for the agent configuration.
     # ``is_test``: the call came through the Test call webhook (…/test/), so its log is marked as a test.
+    # ``widget``: it came through a website widget's webhook (…/widget/<id>/), so its log is filed under that widget.
     data = request.data if isinstance(request.data, dict) else {}
     logger.info("Voice webhook for clinic %s: keys=%s room=%s", clinic.id, sorted(data), data.get("room_name"))
     if is_call_event(request.data):
@@ -246,6 +255,8 @@ def _handle_webhook(clinic, request, is_test=False):
             # 5xx makes the provider retry; recording is idempotent per call id.
             logger.exception("Failed to record call event for clinic %s", clinic.id)
             return Response({"error": "Failed to record call event."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if log is not None and widget is not None and log.widget_id is None:
+            CallLog.objects.filter(id=log.id).update(source=CallLog.Source.WIDGET, widget=widget)
         if log is not None:
             from platform_admin.charging import charge_call_safely
 
@@ -257,10 +268,10 @@ def _handle_webhook(clinic, request, is_test=False):
     caller = caller_number(data)
     try:
         # Inbound numbers never send "call ended" events, so the log is started here.
-        start_call_log(clinic, data, is_test=is_test)
+        start_call_log(clinic, data, is_test=is_test, widget=widget)
     except Exception:
         logger.exception("Could not start the call log for clinic %s", clinic.id)  # never block the call
-    return Response(build_agent_config(clinic, request, caller, is_test=is_test))
+    return Response(build_agent_config(clinic, request, caller, is_test=is_test, always_open=widget is not None))
 
 
 class Rock8WebhookView(APIView):
@@ -274,7 +285,13 @@ class Rock8WebhookView(APIView):
 
     def post(self, request, *args, **kwargs):
         clinic = get_object_or_404(Clinic, id=kwargs.get('clinic_id'))
-        return _handle_webhook(clinic, request, is_test=bool(kwargs.get("test")))
+        widget = None
+        if kwargs.get("widget_id") is not None:
+            from web_widgets.models import WebWidget
+
+            # The widget must be this hospital's: the token in the URL only vouches for the clinic.
+            widget = get_object_or_404(WebWidget, id=kwargs["widget_id"], clinic=clinic.root)
+        return _handle_webhook(clinic, request, is_test=bool(kwargs.get("test")), widget=widget)
 
 
 class Rock8NumberWebhookView(APIView):
@@ -334,6 +351,9 @@ class CallLogFilter(django_filters.FilterSet):
     outcome = django_filters.CharFilter(field_name="outcome", lookup_expr="icontains")
     # ?is_test=false: patients' calls only; ?is_test=true: the app's test calls only.
     is_test = django_filters.BooleanFilter(field_name="is_test")
+    # ?source=widget: calls from the website widget; ?widget=<id>: one widget's calls.
+    source = django_filters.CharFilter(field_name="source")
+    widget = django_filters.NumberFilter(field_name="widget_id")
     # Calls that booked or cancelled an appointment with this doctor.
     doctor = django_filters.NumberFilter(field_name="appointment__doctor_id")
     # ?sentiment=positive|neutral|negative; ?sentiment=none for calls not rated yet.
@@ -391,10 +411,6 @@ class Rock8StartWebCallView(APIView):
     permission_classes = [IsAdminOrDoctor]
     
     def get(self, request, *args, **kwargs):
-        api_key = getattr(settings, 'ROCK8_API_KEY', None)
-        if not api_key:
-            return Response({"error": "ROCK8_API_KEY is not configured."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
         clinic = getattr(request.user, 'clinic', None)
         if not clinic:
             return Response({"error": "User does not belong to a clinic."}, status=status.HTTP_400_BAD_REQUEST)
@@ -426,28 +442,10 @@ class Rock8StartWebCallView(APIView):
             else:
                 webhook_url = with_rock8_token(webhook_url, clinic.id)
         
-        payload = {
-            "participant_name": participant_name,
-            "participant_identity": participant_identity,
-            "webhook_url": webhook_url,
-            **call_flags(clinic.root, for_web_call=True),
-        }
-        
-        headers = {
-            "accept": "application/json",
-            "X-API-Key": api_key,
-            "Content-Type": "application/json"
-        }
-        
         try:
-            response = requests.post("https://worker.heykoala.ai/webCall", json=payload, headers=headers, timeout=20)
-            response.raise_for_status()
-            return Response(response.json(), status=status.HTTP_200_OK)
-        except requests.exceptions.RequestException as e:
-            err_msg = str(e)
-            if hasattr(e, 'response') and e.response is not None:
-                err_msg = e.response.text
-            return Response({"error": f"Failed to start web call: {err_msg}"}, status=status.HTTP_502_BAD_GATEWAY)
+            return Response(start_web_call(clinic.root, webhook_url, participant_name, participant_identity), status=status.HTTP_200_OK)
+        except WebCallError as exc:
+            return Response({"error": exc.message}, status=exc.status)
 
 
 # ---------------------------------------------------------------------------------------------

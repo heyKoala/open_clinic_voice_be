@@ -34,4 +34,5 @@ urlpatterns = [
     path("api/v1/clinical/", include("clinical.urls")),
     path("api/v1/reports/", include("reports.urls")),
     path("api/v1/platform/", include("platform_admin.urls")),
+    path("api/v1/widgets/", include("web_widgets.urls")),
 ]

@@ -34,6 +34,8 @@ urlpatterns = [
     path("webhooks/rock8/<int:clinic_id>/<str:token>/", Rock8WebhookView.as_view(), name="rock8-webhook-path-token"),
     # The in-app Test call: same webhook, but the call is logged as a test.
     path("webhooks/rock8/<int:clinic_id>/<str:token>/test/", Rock8WebhookView.as_view(), {"test": True}, name="rock8-webhook-test"),
+    # A website widget's calls (web_widgets): same webhook, answered at any hour, logged under the widget.
+    path("webhooks/rock8/<int:clinic_id>/<str:token>/widget/<int:widget_id>/", Rock8WebhookView.as_view(), name="rock8-webhook-widget"),
     # The AI's reminder and feedback calls (appointments.outbound): the call's script, and its outcome tool.
     path("webhooks/rock8/<int:clinic_id>/<str:token>/patient-call/<int:call_id>/", PatientCallWebhookView.as_view(), name="rock8-patient-call-webhook"),
     path("tools/rock8/<int:clinic_id>/<str:token>/patient-call/<int:call_id>/outcome/", PatientCallOutcomeToolView.as_view(), name="rock8-tool-patient-call-outcome"),

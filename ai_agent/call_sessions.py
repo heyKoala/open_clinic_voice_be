@@ -49,9 +49,10 @@ def caller_number(data) -> str:
     return digits if identity.startswith("sip") and len(digits) >= 10 else ""
 
 
-def start_call_log(clinic, data, is_test: bool = False) -> CallLog | None:
+def start_call_log(clinic, data, is_test: bool = False, widget=None) -> CallLog | None:
     """Create the CallLog when a call starts, and schedule fetching its recording/transcript.
-    ``is_test`` marks a call from the app's Test call button (it is also recognised from ``data``)."""
+    ``is_test`` marks a call from the app's Test call button (it is also recognised from ``data``);
+    ``widget`` marks a call from that website widget."""
     room = str((data or {}).get("room_name") or "")[:100] if isinstance(data, dict) else ""
     if not room:
         return None
@@ -65,13 +66,22 @@ def start_call_log(clinic, data, is_test: bool = False) -> CallLog | None:
         "phone": f"+{caller}" if caller else "",
         "language": "en",
         "outcome": IN_PROGRESS,
-    }, updates={"is_test": True} if (is_test or is_test_call(data)) else {})
+    }, updates=_source_fields(is_test or is_test_call(data), widget))
     if caller and not log.summary:
         CallLog.objects.filter(id=log.id).update(summary=f"Call from +{caller}.")
     if caller and not log.phone:
         CallLog.objects.filter(id=log.id).update(phone=f"+{caller}")
     enqueue_recording_fetch(log.id, room, caller)
     return log
+
+
+def _source_fields(is_test: bool, widget) -> dict:
+    """Where the call came from, when it was not the phone number."""
+    if widget is not None:
+        return {"source": CallLog.Source.WIDGET, "widget": widget}
+    if is_test:
+        return {"is_test": True, "source": CallLog.Source.TEST}
+    return {}
 
 
 def enqueue_recording_fetch(call_log_id: int, room_name: str, caller: str, countdown: int = 90) -> None:

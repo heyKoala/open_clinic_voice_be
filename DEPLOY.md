@@ -69,6 +69,12 @@ cookie it must send back on every save; without it every POST/PUT/DELETE fails w
 `PUBLIC_BASE_URL` must be reachable from the internet: the voice provider calls it at the start of every
 phone call (for the agent's configuration) and during the call (booking tools).
 
+`LIVEKIT_URL` must be the voice service's LiveKit address (`wss://….livekit.cloud`): browsers connect to it for
+website widget calls and the in-app Test call. With the wrong address those calls fail with "invalid API key".
+Optional widget switches: `WIDGETS_PUBLIC_ENABLED=0` turns the website widget off everywhere,
+`WIDGET_CALLS_REQUIRE_CREDITS=1` refuses new widget calls for a hospital with no credits left, and
+`WIDGET_BUNDLE_URL` overrides where `widget.js` is served (default: `FRONTEND_URL` + `/widget/widget.js`).
+
 ## 3. Database and data
 
 ```
