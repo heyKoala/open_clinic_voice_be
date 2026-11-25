@@ -218,6 +218,8 @@ def session_config(current: dict) -> dict:
         "inactivity_end_message": current["inactivity_end_message"],
         "background_sound": False,
         "vad_config": dict(preset),
+        # The caller cannot talk over the greeting: it is always heard in full (the recording notice included).
+        "uninterruptible_greeting": True,
     }
 
 

@@ -173,6 +173,7 @@ def test_call_audio_defaults_are_sent_with_every_call(admin_client, api_client, 
     assert config["vad_config"]["min_silence_duration"] == 0.45
     # Before the hang-up: "Are you still there?" at 10 s and 20 s, then the goodbye.
     assert (config["inactivity_timeout"], config["inactivity_max_prompts"]) == (10, 2)
+    assert config["uninterruptible_greeting"] is True  # the greeting is never cut off by the caller
     assert config["inactivity_message"] == "Are you still there?"
     assert config["inactivity_end_message"] == "I'll end the call now since I haven't heard from you. Goodbye!"
 
