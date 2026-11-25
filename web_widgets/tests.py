@@ -153,7 +153,7 @@ class TestManaging:
         }, format="json")
         assert res.status_code == 201, res.data
         assert res.data["name"] == "Main site" and res.data["allowed_origins"] == [SITE]
-        assert res.data["branding"] == {"primary_color": "#0055aa", "position": "bottom-right", "button_label": "Talk to us"}
+        assert res.data["branding"] == {"primary_color": "#0055aa", "position": "bottom-right", "button_label": "Talk to AI"}
         assert res.data["public_key"].startswith("wd_") and res.data["public_key"] in res.data["embed_snippet"]
         assert WebWidget.objects.get().clinic_id == clinic.id
         patched = admin_client.patch(f"/api/v1/widgets/{res.data['id']}/", {"is_active": False}, format="json")

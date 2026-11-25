@@ -1,6 +1,6 @@
 """The voice widget a hospital puts on its website.
 
-One row is one widget: a "Talk to us" button that starts a browser call with the hospital's AI receptionist
+One row is one widget: a "Talk to AI" button that starts a browser call with the hospital's AI receptionist
 (the same agent, tools and knowledge as its phone number). The website loads our script with the widget's
 public key; calls it starts are CallLogs with ``source="widget"``.
 """
@@ -12,7 +12,7 @@ from django.db import models
 
 from common.models import ClinicScopedModel
 
-DEFAULT_BRANDING = {"primary_color": "#111827", "position": "bottom-right", "button_label": "Talk to us"}
+DEFAULT_BRANDING = {"primary_color": "#111827", "position": "bottom-right", "button_label": "Talk to AI"}
 
 
 def generate_public_key() -> str:
